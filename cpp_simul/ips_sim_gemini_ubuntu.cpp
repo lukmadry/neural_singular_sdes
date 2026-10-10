@@ -137,7 +137,7 @@ void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::vector
 		
 		// std::cout << "we reach here1" << std::endl;
 		// Compute interactions without extra allocations
-		// #pragma omp simd
+		#pragma omp simd
 		for (int j = 0; j < N; ++j) {
 			double drift_sum = 0.0;
 			double x_j = x_ptr[j];
@@ -209,6 +209,10 @@ int main(int argc, char** argv) {
 		i++;
 	}
 
+	if (p_coefs.size() == 0){
+		p_coefs.push_back(0);
+		p_coefs.push_back(0);
+	}
 	run_simulation(N, alph, multip, p_coefs, p_coefs.size(), fname);
 	return 0;
 }

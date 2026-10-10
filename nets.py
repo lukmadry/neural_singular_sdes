@@ -14,14 +14,17 @@ class MLP(nn.Module):
 		self.net = nn.Sequential(*sequences)
 
 	def forward(self, x):
-		# enc_pos = self.encoder(x)
-		# enc_neg = self.encoder(-x)
 		pos = self.net(x)
 		neg = self.net(-x)
 		return 0.5*(pos-neg)
 
+	def load_state_dict(self):
+		pass
 
-def get_model(input_size, hidden_layers, learning_rate):
+# other optimisers are possible, TODO to test them
+def get_model(input_size, hidden_layers, learning_rate, weight_decay=0.0):
 	mlp = MLP(input_size, hidden_layers, 1)
-	optimizer = torch.optim.SGD(mlp.parameters(), lr=learning_rate)
+	optimizer = torch.optim.AdamW(mlp.parameters(),
+		                            lr=learning_rate,
+		                            weight_decay=weight_decay)
 	return mlp, optimizer
