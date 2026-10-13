@@ -2,6 +2,8 @@ import numpy as np
 import os
 import json
 
+from collections import Counter
+
 def compare_dimensions(x, y):
 	if isinstance(x, list) and isinstance(y, np.ndarray):
 		x = np.array(x)
@@ -48,6 +50,53 @@ def function_factory(power, multiplier, taylor_coefs, eps):
 			polynomial += np.power(x, j+1) * t
 		return np.sign(x) * multiplier/(eps + np.power(np.abs(x), power)) * (1 + np.maximum(-1, np.minimum(polynomial, 1)))
 	return fn
+
+# we ignore coefs
+def find_closest_path(fn_params, storage_filelist,
+                      alph_range=(0, 0.49),
+                      mult_range=(0.5, 3)):
+
+	closest_path_idx = 0
+	min_path_dist = 100
+	fn_alph_norm = (fn_params[0] - alph_range[0]) / (alph_range[1] - alph_range[0])
+	fn_mult_norm = (fn_params[1] - mult_range[0]) / (mult_range[1] - mult_range[0])
+	for i, path in enumerate(storage_filelist):
+		parts = path.split("_")
+		alph = float(parts[3])
+		multip = float(parts[5])
+		alph_norm = (alph - alph_range[0])/(alph_range[1] - alph_range[0])
+		multip_norm = (multip - mult_range[0])/(mult_range[1] - mult_range[0])
+		dist = (fn_alph_norm - alph_norm) ** 2 + (fn_mult_norm - multip_norm) ** 2
+		if dist < min_path_dist and dist > 1e-6: # i.e. it's not the same path, there are surely better way to do this
+			closest_path_idx = i
+			min_path_dist = dist
+	return storage_filelist[closest_path_idx]
+
+def find_closest_path_cluster(fn_param_dict, storage_filelist,
+                            alph_range=(0, 0.49), mult_range=(0.5, 3),
+                              assume_empty_intersection=False):
+
+	if assume_empty_intersection: # we will just compare the mean
+		alph = np.mean(fn_param_dict['alphas'])
+		mult = np.mean(fn_param_dict['multipliers'])
+		return find_closest_path((alph, mult), storage_filelist, alph_range=alph_range, mult_range=mult_range)
+	else:
+		path_counter = Counter()
+		# we will make sure that the intersection is empty
+		filtered_storage_filelist = []
+		for path in storage_filelist:
+			parts = path.split("_")
+			alph = float(parts[3])
+			multip = float(parts[5])
+			for a, m in zip(fn_param_dict['alphas'], fn_param_dict['multipliers']):
+				if not np.allclose([a, m], [alph, multip]):
+					filtered_storage_filelist.append(path)
+
+		for a, m in zip(fn_param_dict['alphas'], fn_param_dict['multipliers']):
+			path = find_closest_path((a, m), filtered_storage_filelist)
+			path_counter[path] += 1
+
+		return path_counter.most_common(1)[0][0]
 
 # this is just a convenience structure for input data, not a Dataset in a PyTorch sense which needs to provide outputs as well
 class OneFunctionOnAGrid:

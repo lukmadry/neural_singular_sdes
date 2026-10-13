@@ -5,6 +5,7 @@ import numpy as np
 import h5py
 import json
 
+from helpers import find_closest_path, find_closest_path_cluster
 from train_nn_on_drifts import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised
 
 class TestDatasetBuilding(unittest.TestCase):
@@ -76,6 +77,63 @@ class TestDatasetBuilding(unittest.TestCase):
 		self.assertEqual(len(dataset), self.xgrid.shape[0] * 12)
 
 		self.assertEqual(len(dataset[0][0]), 9)
+
+class TestTrajectoryFinder(unittest.TestCase):
+
+	storage_list = ['N_200_alph_0.25_mult_1_coefs_0.5.hdf5',
+	                'N_200_alph_0.30_mult_1_coefs_0.5.hdf5',
+	                'N_200_alph_0.35_mult_1.25_coefs_0.5.hdf5',
+	                'N_200_alph_0.4_mult_1.25_coefs_0.5.hdf5',
+	                'N_200_alph_0.32_mult_1.25_coefs_0.5.hdf5']
+
+	fn_params_for_sec = (0.31, 1.1)
+	fn_params_for_third = (0.34, 1.2)
+	fn_params_for_first = (0.30, 1)
+
+	alphas_empty_inter = [0.305, 0.31]
+	mults_empty_inter = [1.05, 1.1]
+
+	alphas_nonempty_inter = [0.30, 0.305, 0.31]
+	multipliers_nonempty_inter = [1, 1.20, 1.21]
+
+	alphas_nonempty_inter_sec = [0.30, 0.305, 0.303]
+	multipliers_nonempty_inter_sec = [1, 1.05, 1.03]
+
+	alphas_nonempty_inter_wrong = [0.30, 0.305]
+	multipliers_nonempty_inter_wrong = [1, 1.05]
+
+	def test_onepath_closest_finder(self):
+
+		cpath_sec = find_closest_path(self.fn_params_for_sec, self.storage_list)
+		cpath_third = find_closest_path(self.fn_params_for_third, self.storage_list)
+		cpath_first = find_closest_path(self.fn_params_for_first, self.storage_list) # should filter out the second one
+
+		self.assertEqual(cpath_sec, self.storage_list[1])
+		self.assertEqual(cpath_third, self.storage_list[2])
+		self.assertEqual(cpath_first, self.storage_list[0])
+
+	def test_cluster_finder(self):
+
+		param_dict = {"alphas": self.alphas_empty_inter, "multipliers": self.mults_empty_inter}
+		cpath = find_closest_path_cluster(param_dict, self.storage_list, assume_empty_intersection=True)
+		cpath_two = find_closest_path_cluster(param_dict, self.storage_list, assume_empty_intersection=False)
+		self.assertEqual(cpath, self.storage_list[1])
+		self.assertEqual(cpath_two, self.storage_list[1])
+
+		param_dict_nonempty_wrong = {"alphas": self.alphas_nonempty_inter_wrong,
+		                             "multipliers": self.multipliers_nonempty_inter_wrong}
+		cpath_ne = find_closest_path_cluster(param_dict_nonempty_wrong, self.storage_list, assume_empty_intersection=True)
+		self.assertEqual(cpath_ne, self.storage_list[1])
+
+		param_dict_nonempty = {"alphas": self.alphas_nonempty_inter, "multipliers": self.multipliers_nonempty_inter}
+		cpath_ne_filter = find_closest_path_cluster(param_dict_nonempty, self.storage_list, assume_empty_intersection=False)
+		self.assertEqual(cpath_ne_filter, self.storage_list[4])
+
+		param_dict_nonempty_sec = {"alphas": self.alphas_nonempty_inter_sec, "multipliers": self.multipliers_nonempty_inter_sec}
+		cpath_ne_filter = find_closest_path_cluster(param_dict_nonempty_sec, self.storage_list,
+		                                            assume_empty_intersection=True)
+		self.assertEqual(cpath_ne_filter, self.storage_list[1])
+
 
 class TestEval(unittest.TestCase):
 	pass
