@@ -98,6 +98,35 @@ def find_closest_path_cluster(fn_param_dict, storage_filelist,
 
 		return path_counter.most_common(1)[0][0]
 
+def path_to_params(path, return_dict=False, return_as_list=False):
+	parts = path.split("_")
+	alph = float(parts[3])
+	multip = float(parts[5])
+	coefs = [float(x.replace(".hdf5", "")) for x in parts[7:]]
+	if return_dict and not return_as_list:
+		return {"alphas": alph, "multipliers": multip, "coefs": coefs}
+	elif return_dict and return_as_list:
+		return {"alphas": [alph], "multipliers": [multip], "coefs": [coefs]}
+	return alph, multip, coefs
+
+def build_a_cluster(params, storage_filelist, sample_k_paths,
+                    storage_dir='storage_dir', idx=0):
+	trunc_params = {}
+	for key, items in params.items():
+		trunc_params[key] = [items[idx]]  # this can be randomised as well
+
+	for k in range(sample_k_paths):
+		new_path = find_closest_path_cluster(fn_param_dict=trunc_params,
+		                                     storage_filelist=storage_filelist,
+		                                     assume_empty_intersection=True)
+		storage_filelist = list(set(storage_filelist).difference([new_path]))
+		new_params = path_to_params(new_path, return_dict=True)
+		new_params['storage_names'] = os.path.join(storage_dir, new_path)
+		for key in trunc_params.keys():
+			trunc_params[key].append(new_params[key])
+
+	return trunc_params
+
 # this is just a convenience structure for input data, not a Dataset in a PyTorch sense which needs to provide outputs as well
 class OneFunctionOnAGrid:
 	def __init__(self, xgrid, alpha, multip, coefs, eps, times=None,

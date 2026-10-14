@@ -5,7 +5,7 @@ import numpy as np
 import h5py
 import json
 
-from helpers import find_closest_path, find_closest_path_cluster
+from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster
 from train_nn_on_drifts import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised
 
 class TestDatasetBuilding(unittest.TestCase):
@@ -26,7 +26,6 @@ class TestDatasetBuilding(unittest.TestCase):
 	# needs to be checked as creation of this dataset is handled in C++
 	def test_dimensions(self):
 		filenames = glob(os.path.join(self.storage_dir, f"*_N_{self.Ninter}_*.hdf5"))
-
 
 		desired_shape = (self.M, self.Ninter) # note that this is transposed later on
 		for fname in filenames:
@@ -57,7 +56,6 @@ class TestDatasetBuilding(unittest.TestCase):
 			self.assertEqual(part[2].shape, self.xgrid.shape)
 			self.assertEqual(part[3].shape, (self.Ninter,))
 
-
 	def test_build_whole_dataset(self):
 		with open(self.param_dict_fpath) as f:
 			param_dict = json.load(f)
@@ -84,7 +82,8 @@ class TestTrajectoryFinder(unittest.TestCase):
 	                'N_200_alph_0.30_mult_1_coefs_0.5.hdf5',
 	                'N_200_alph_0.35_mult_1.25_coefs_0.5.hdf5',
 	                'N_200_alph_0.4_mult_1.25_coefs_0.5.hdf5',
-	                'N_200_alph_0.32_mult_1.25_coefs_0.5.hdf5']
+	                'N_200_alph_0.32_mult_1.25_coefs_0.5.hdf5',
+	                ]
 
 	fn_params_for_sec = (0.31, 1.1)
 	fn_params_for_third = (0.34, 1.2)
@@ -133,6 +132,16 @@ class TestTrajectoryFinder(unittest.TestCase):
 		cpath_ne_filter = find_closest_path_cluster(param_dict_nonempty_sec, self.storage_list,
 		                                            assume_empty_intersection=True)
 		self.assertEqual(cpath_ne_filter, self.storage_list[1])
+
+	def test_cluster_building(self):
+
+		params = {"alphas": [0.33], "multipliers": [1.19],
+		          "storage_names": 'N_200_alph_0.33_mult_1.19_coefs_0.5.hdf5'}
+		st_list = self.storage_list + ['N_200_alph_0.33_mult_1.2_coefs_0.5.hdf5']
+
+		cluster = build_a_cluster(params, st_list, 2)
+		self.assertEqual(cluster['alphas'], [0.33, 0.33, 0.32])
+		self.assertEqual(cluster['multipliers'], [1.19, 1.2, 1.25])
 
 
 class TestEval(unittest.TestCase):

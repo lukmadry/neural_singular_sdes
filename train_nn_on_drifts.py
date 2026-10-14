@@ -1,3 +1,5 @@
+import os
+
 import h5py
 import numpy as np
 import argparse
@@ -10,11 +12,13 @@ import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from nets import get_model
-from helpers import update_json, build_progress_bar, function_factory
+from helpers import update_json, build_progress_bar, function_factory, path_to_params, find_closest_path, \
+	find_closest_path_cluster, build_a_cluster
 from evals import Evaluator
 
 # TODO create two evaluators, one for training set and one for validation set. After each epoch do a check on these evaluators and dump the result somewehere
-# TODO refactor so that this is a main file which provides access to a backend
+# TODO refactor so that this is a main short file which provides access to a backend
+# TODO add CI/CD run using this loop
 
 def sample_interaction_parameters(N, max_n_coefs, alph_range, multip_range, coefs_range):
 	"""
@@ -126,7 +130,8 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
 	print(build_progress_bar(len(data), len(data)), end="\n")
 	return all_datasets
 
-def split_param_dict_train_val(param_dict, train_size=0.75):
+def split_param_dict_train_val(param_dict,
+                               train_size=0.75, output_max = (None, None)):
 	idx = np.random.permutation(len(param_dict['alphas']))
 	Ntrain = int(len(param_dict['alphas']) * train_size )
 
@@ -134,7 +139,11 @@ def split_param_dict_train_val(param_dict, train_size=0.75):
 
 	for tag in param_dict.keys():
 		train_v = [param_dict[tag][i] for i in idx[:Ntrain]]
+		if output_max[0] is not None:
+			train_v = train_v[:output_max[0]]
 		val_v = [param_dict[tag][i] for i in idx[Ntrain:]]
+		if output_max[1] is not None:
+			val_v = val_v[:output_max[1]]
 		train_dict[tag] = train_v
 		val_dict[tag] = val_v
 
@@ -183,7 +192,6 @@ class DatasetParametrised(Dataset):
 
 	def __len__(self):
 		return self.k * self.length_of_one_fdataset
-
 
 # TODO add parallel training on multiple cores
 def train_loop(loader, net, opt,
@@ -250,7 +258,7 @@ def unweighted_mse(pred, output, *args, **kwargs):
 if __name__ == '__main__':
 	# TODO allow empty storage_dir and script_filepath argument if Ninter is given
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--mode', choices=['generate', 'train', 'train_one_path'])
+	parser.add_argument('--mode', choices=['generate', 'train', 'train_one_path', 'train_in_cluster'])
 
 	# only relevant for generation
 	parser.add_argument("--alpha_range", nargs=2, type=float, default=(0, 0.49))
@@ -276,8 +284,8 @@ if __name__ == '__main__':
 
 	# training parameters
 	parser.add_argument("--batch_size", type=int, default=128)
-	parser.add_argument("--hidden_layers", type=int, nargs="+", default=[256, 256])
-	parser.add_argument("--learning_rate", type=float, default=1e-2)
+	parser.add_argument("--hidden_layers", type=int, nargs="+", default=[512, 512, 512])
+	parser.add_argument("--learning_rate", type=float, default=1e-3)
 	parser.add_argument("--max_batches", type=int, default=10000)
 	parser.add_argument("--smoke_run", action=argparse.BooleanOptionalAction, default=False)
 	parser.add_argument("--loss", type=str, choices=['mse', 'time_weighting'], default='mse')
@@ -285,8 +293,10 @@ if __name__ == '__main__':
 
 	# data parameters
 	parser.add_argument("--storage_dir", default="storage")
-	parser.add_argument("--figure_fpath", type=str)
-	parser.add_argument("--sample_k_paths", type=int)
+	parser.add_argument("--seed_cluster_path_idx", type=int)
+	parser.add_argument("--figure_dir", type=str)
+	parser.add_argument("--sample_k_paths_train", type=int)
+	parser.add_argument("--sample_k_paths_val", type=int)
 
 	args = parser.parse_args()
 	params_to_save_path = Path(args.script_filepath).stem + "_params.json"
@@ -311,7 +321,8 @@ if __name__ == '__main__':
 		with open(args.script_filepath, "w") as f:
 			f.write(script)
 
-		update_json(params_to_save_path, {"alphas": alphas, "multipliers": multips, "coefs": coefs, "storage_names": storage_names})
+		update_json(params_to_save_path, {"alphas": alphas, "multipliers": multips,
+		                                  "coefs": coefs, "storage_names": storage_names})
 
 		makedirs(args.storage_dir, exist_ok=True)
 
@@ -321,8 +332,13 @@ if __name__ == '__main__':
 
 		xgrid = np.arange(args.lower_bd, args.upper_bd, args.grid_size)
 		stop_at_k = np.inf if not args.smoke_run else 2
+		validation_prototype = None
+		validation_path = None
 		if args.mode == 'train':
-			train_params, val_params = split_param_dict_train_val(params)
+			# TODO rewrite it so that it uses the closest path mechanism for validation and maybe for finding other training paths as well
+			# TODO get two validations - one that falls inside the trained range, so it is interpolation, the other one for extrapolation
+			train_params, val_params = split_param_dict_train_val(params,
+			                                                      output_max=(args.sample_k_paths_train, args.sample_k_paths_val))
 
 			train_dataset_prototype = build_whole_dataset_parametrised(xgrid, train_params,
 			                                                           stop_at_k=stop_at_k, Ninter=args.Ninter)
@@ -333,26 +349,47 @@ if __name__ == '__main__':
 			val_dataset = DatasetParametrised(xgrid, val_dataset_prototype, max_polynomial_degree=args.max_n_coefs)
 			# TODO add dumping a model to some folder
 			input_size = train_dataset.input_size
-			dataset_prototype = train_dataset_prototype[:400] # TODO check if it's [:400] for one or sth else
-			# TODO ideally you would evaluate at path from val_dataset...
+			dataset_prototype = train_dataset_prototype[:400]
+			validation_prototype = val_dataset_prototype[:400] # is it good ?
+		elif args.mode == 'train_in_cluster':
+			if args.seed_cluster_path_idx is None:
+				idx = np.random.randint(len(params['storage_names']))
+			else:
+				idx = args.seed_cluster_path_idx
+			storage_filelist = [Path(params['storage_names'][i]).name for i in range(len(params['storage_names'])) if i != idx]
+			cluster = build_a_cluster(params, storage_filelist,
+			                          sample_k_paths=args.sample_k_paths_train,
+			                          storage_dir=args.storage_dir, idx=idx)
+			validation_path = find_closest_path_cluster(cluster, storage_filelist)
+			dataset_prototype = build_whole_dataset_parametrised(xgrid, cluster, Ninter=args.Ninter)
+			train_dataset = DatasetParametrised(xgrid, dataset_prototype, max_polynomial_degree=args.max_n_coefs)
+			input_size = train_dataset.input_size
 		elif args.mode == 'train_one_path':
 			trunc_params = {}
 			for key, items in params.items():
-				trunc_params[key] = [items[0]]
-
+				trunc_params[key] = [items[0]] # this can be randomised as well
 			dataset_prototype = build_whole_dataset_parametrised(xgrid, trunc_params,
 			                                                     Ninter=args.Ninter, stop_at_k=stop_at_k)
-			print('dataset prototype 00 ', dataset_prototype[0][0])
 			dataset = DatasetParametrised(xgrid, dataset_prototype, max_polynomial_degree=args.max_n_coefs)
 			train_length = int(0.75*len(dataset))
 			train_dataset, val_dataset = random_split(dataset, lengths=[train_length, len(dataset) - train_length])
 			input_size = dataset.input_size
+
+			validation_path = find_closest_path((trunc_params['alphas'][0], trunc_params['multipliers'][0]),
+			                                    storage_filelist=os.listdir(args.storage_dir))
 		else:
 			raise NotImplementedError
 
+		if validation_prototype is None and validation_path is not None:
+			validation_params = path_to_params(validation_path, return_dict=True, return_as_list=True)
+			validation_params["storage_names"] = [os.path.join(args.storage_dir, validation_path)]
+			print(validation_params)
+			validation_prototype = build_whole_dataset_parametrised(xgrid, validation_params,
+			                                                        Ninter=args.Ninter, stop_at_k=stop_at_k)
+			val_dataset = DatasetParametrised(xgrid, validation_prototype, max_polynomial_degree=args.max_n_coefs)
+
 		train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
 		val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
-
 		print("Created training set of size {} and validation set of size {}".format(len(train_dataset),
 		                                                                             len(val_dataset)))
 		model, opt = get_model(input_size=input_size,
@@ -360,18 +397,23 @@ if __name__ == '__main__':
 		                       learning_rate=args.learning_rate,
 		                       weight_decay=args.weight_decay)
 
-		evaluator = Evaluator(network=model,
-		                      xgrid=xgrid,
-		                      time_indices=[1, 10, 75, 100, 150, 200, 250, 300],
-		                      dt=dt, eps=eps,
-		                      proto_dataset=dataset_prototype)
-
 		if args.loss == 'mse':
 			loss_fn = unweighted_mse
 		else:
 			loss_fn = time_sensitive_loss
 
-		train_over_epochs(10, train_loader, val_loader,
-		                  model, opt, loss_fn)
+		evaluator_kwargs = dict(network=model,
+		                      xgrid=xgrid,
+		                      time_indices=[1, 10, 75, 100, 150, 200, 250, 300],
+		                      dt=dt, eps=eps)
+		evaluator = Evaluator(proto_dataset=dataset_prototype, **evaluator_kwargs)
 
-		evaluator.evaluate_grid(figure_fpath=args.figure_fpath)
+		train_over_epochs(10, train_loader, val_loader,
+		                  model, opt, loss_fn, max_batches=args.max_batches)
+
+		os.makedirs(args.figure_dir, exist_ok=True)
+		evaluator.evaluate_grid(figure_fpath=os.path.join(args.figure_dir, "train.png"))
+
+		if validation_prototype is not None:
+			evaluator_on_unseen = Evaluator(proto_dataset=validation_prototype, **evaluator_kwargs)
+			evaluator_on_unseen.evaluate_grid(figure_fpath=os.path.join(args.figure_dir, "validation.png"))
