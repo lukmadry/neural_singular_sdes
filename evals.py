@@ -16,11 +16,19 @@ class Evaluator:
 	             proto_dataset = None, fn_params = None):
 		"""
 
-		:param network:
-		:param fn_params:
-		:param xgrid:
-		:param times:
-		:param storage_directory:
+		network - accepts inputs as:
+		(\alpha, m, polynomial coefficients*, time, x)
+
+		*currently these are essentially zero (21/10)
+
+		fn_params = (alpha, m, polynomial coefficients, eps)
+
+		proto_dataset - see train_nn_on_drifts.build_whole_dataset for the construction, but it contains:
+		a list of training points, M for every combination of parameters of function f
+		every element of a list is a tuple of:
+		(parameters of a function, time t, j -> f(x - X^j_t) for x in xgrid, positions at time zero)
+
+		TODO add validation of proto_dataset
 		"""
 		self.network = network
 		self.fn_params = fn_params
@@ -37,6 +45,8 @@ class Evaluator:
 		else:
 			if fn_params is not None:
 				raise ValueError
+			self.proto_dataset = None
+
 		self.fn_caller = OneFunctionOnAGrid(xgrid, *self.fn_params)
 
 
@@ -84,7 +94,44 @@ class Evaluator:
 		fig_stat.savefig(figure_fpath)
 		return idx, errors, preds, y_inputs
 
-	def evaluate_trajectory(self):
+	def evaluate_trajectory_exact(self, xinit, pos_arr, time_indices=None,
+	                              noise_increments=None, with_plots=True, plot_fpath=None):
+
+		if with_plots and plot_fpath is None:
+			raise ValueError("if you want to plot the results, you need to supply the path of the .png that will be saved")
+		tidx = time_indices if time_indices is not None else self.time_indices
+		if noise_increments is None:
+			noise_increments = np.random.randn(len(tidx)) * np.sqrt(self.dt)
+		x = xinit
+		neural_x = xinit
+
+		exact_trajectory = [x]
+		neural_trajectory = [neural_x]
+
+		for t in range(len(tidx)): # you should be able to just pass dt * 1000 or something like this
+			upd = self.fn_caller.apply_fn_pos_arr(x, t, pos_arr) * self.dt + noise_increments[t]
+			x += upd
+			exact_trajectory.append(x)
+
+			xinput = self.fn_caller.create_input_with_time_and_pos(tidx[t], neural_x)
+			drift = self.network.forward(torch.as_tensor(xinput, dtype=torch.float32)).detach().numpy().flatten()[0]
+			neural_upd = drift * self.dt + noise_increments[t]
+			neural_x += neural_upd
+			neural_trajectory.append(neural_x)
+
+		error = np.linalg.norm(np.array(exact_trajectory) - np.array(neural_trajectory))
+		if with_plots:
+			self.plot_trajectories(exact_trajectory, neural_trajectory, plot_fpath)
+		return exact_trajectory, neural_trajectory, error
+
+	def plot_trajectories(self, exact_trajectory, neural_trajectory, plot_fpath):
+		fig = plt.figure(figsize=(10, 10))
+		plt.plot(exact_trajectory, label='Exact', color='green')
+		plt.plot(neural_trajectory, label='Neural', color='red')
+		plt.legend()
+		plt.savefig(plot_fpath)
+
+	def evaluate_trajectory_interpolation(self, noise_increments, time_indices=None):
 		pass
 
 	def load_state_dict(self, state_dict):

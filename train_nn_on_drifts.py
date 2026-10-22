@@ -1,4 +1,5 @@
 import os
+from signal import valid_signals
 
 import h5py
 import numpy as np
@@ -83,27 +84,51 @@ def build_part_of_dataset(xgrid, positions_arr,
 	return total_x
 
 def build_part_of_dataset_parametrised(xgrid, fn_parameters,
-                                       time_indices, positions_arr):
+                                       time_indices, positions_arr,
+                                       ):
+	"""
+
+	:param xgrid:
+	:param fn_parameters:
+	:param time_indices:
+	:param positions_arr:
+	:return: a list of tuples arranged as :
+	(parameters of function, time, list of values of f(x - X^j) at this time evaluated at x=xgrid, starting values of position array)
+	"""
 	fn = function_factory(*fn_parameters)
 	total_x = []
 	for i, ti in enumerate(time_indices[1:], 1):
 		vals = compute_drift_vec(xgrid, positions_arr[i, :], fn)
 		total_x.append((fn_parameters, ti, vals, positions_arr[0, :]))
+
 	return total_x
 
 def build_whole_dataset_parametrised(xgrid, params_dict,
-                                     Ninter=150, stop_at_k=np.inf):
+                                     Ninter=150, stop_at_k=np.inf, return_rarified_pos_arr=False):
+	"""
+
+	:param xgrid:
+	:param params_dict:
+	:param Ninter:
+	:param stop_at_k:
+
+	:return: (a list of tuples arranged as in build_part_..., time_indices)
+	"""
 	alphas, multips, coefs, data = params_dict['alphas'], params_dict['multipliers'], params_dict['coefs'], params_dict['storage_names']
 	eps = 1/np.power(Ninter, 1-1e-4)
 	dt = 0.1 * eps * eps # reproducing the computation of dt in the .cpp file
 	M = int(1/dt) + 1
-	time_indices = np.arange(1, M, 1000) * dt
+	time_skeleton = np.arange(0, M, 1000) # we can start at zero because later on we start with [1:] anyway
+	time_indices = time_skeleton * dt
 
 	if stop_at_k < np.inf:
 		time_indices = time_indices[:2*stop_at_k]
 
 	all_datasets = []
+	print(f"Number of time steps: {int(M/1000)}")
 	print("Progress at loading storage: ")
+	pos_arrays = []
+
 	for nb, (a, m, c, storage_fname) in enumerate(zip(alphas, multips, coefs, data)):
 		# we will first check if Ninter matches the file
 
@@ -114,13 +139,16 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
 		ninter_idx = fname.index("N_")
 		ninter = int(fname[ninter_idx:ninter_idx+7].split("_")[1])
 		if ninter != Ninter:
-			raise ValueError
+			raise ValueError("number of particles that you passed does not match the number in the dataset")
 		with h5py.File(storage_fname, "r") as f:
 			positions_arr = f['drift_results'][:]
 
 		positions_arr = positions_arr.reshape(-1, Ninter).astype(np.float32)
-		part_dataset = build_part_of_dataset_parametrised(xgrid, (a, m, c, eps), time_indices, positions_arr)
+		part_dataset = build_part_of_dataset_parametrised(xgrid, (a, m, c, eps),
+		                                                  time_indices, positions_arr)
 		all_datasets.extend(part_dataset)
+		if return_rarified_pos_arr:
+			pos_arrays.append(positions_arr) # no need to do anything, they are already rarified in c++
 
 		if nb > stop_at_k: # mostly for testing
 			break
@@ -128,7 +156,9 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
 		print(build_progress_bar(nb, len(data)), end="\r")
 
 	print(build_progress_bar(len(data), len(data)), end="\n")
-	return all_datasets
+	if return_rarified_pos_arr:
+		return all_datasets, time_indices, pos_arrays
+	return all_datasets, time_indices
 
 def split_param_dict_train_val(param_dict,
                                train_size=0.75, output_max = (None, None)):
@@ -225,7 +255,7 @@ def test_loop(loader, net, loss_fn, max_batches):
 	total_loss = 0.0
 	nb_batches = 0
 	for data, labels in loader:
-		output = net(data)
+		output = net(data).flatten()
 		loss = loss_fn(output, labels, data)
 		total_loss += loss.item()
 		nb_batches += 1
@@ -290,6 +320,7 @@ if __name__ == '__main__':
 	parser.add_argument("--smoke_run", action=argparse.BooleanOptionalAction, default=False)
 	parser.add_argument("--loss", type=str, choices=['mse', 'time_weighting'], default='mse')
 	parser.add_argument("--weight_decay", default=0.0, type=float)
+	parser.add_argument("--no_epochs", type=int, default=10)
 
 	# data parameters
 	parser.add_argument("--storage_dir", default="storage")
@@ -297,6 +328,9 @@ if __name__ == '__main__':
 	parser.add_argument("--figure_dir", type=str)
 	parser.add_argument("--sample_k_paths_train", type=int)
 	parser.add_argument("--sample_k_paths_val", type=int)
+
+	# evaluation parameters
+	parser.add_argument("--plot_trajectories", action=argparse.BooleanOptionalAction, default=False)
 
 	args = parser.parse_args()
 	params_to_save_path = Path(args.script_filepath).stem + "_params.json"
@@ -334,23 +368,30 @@ if __name__ == '__main__':
 		stop_at_k = np.inf if not args.smoke_run else 2
 		validation_prototype = None
 		validation_path = None
+
+		train_pos_array = None
+		val_pos_array = None
+		train_time_indices = None
+		val_time_indices = None
 		if args.mode == 'train':
 			# TODO rewrite it so that it uses the closest path mechanism for validation and maybe for finding other training paths as well
 			# TODO get two validations - one that falls inside the trained range, so it is interpolation, the other one for extrapolation
 			train_params, val_params = split_param_dict_train_val(params,
 			                                                      output_max=(args.sample_k_paths_train, args.sample_k_paths_val))
 
-			train_dataset_prototype = build_whole_dataset_parametrised(xgrid, train_params,
-			                                                           stop_at_k=stop_at_k, Ninter=args.Ninter)
-			val_dataset_prototype = build_whole_dataset_parametrised(xgrid, val_params,
-			                                                         stop_at_k=stop_at_k, Ninter=args.Ninter)
+			train_dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, train_params,
+			                                                                               stop_at_k=stop_at_k, Ninter=args.Ninter)
+			val_dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, val_params,
+			                                                                             stop_at_k=stop_at_k, Ninter=args.Ninter)
 
 			train_dataset = DatasetParametrised(xgrid, train_dataset_prototype, max_polynomial_degree=args.max_n_coefs)
 			val_dataset = DatasetParametrised(xgrid, val_dataset_prototype, max_polynomial_degree=args.max_n_coefs)
 			# TODO add dumping a model to some folder
 			input_size = train_dataset.input_size
-			dataset_prototype = train_dataset_prototype[:400]
-			validation_prototype = val_dataset_prototype[:400] # is it good ?
+			M = train_time_indices.shape[0]
+			dataset_prototype = train_dataset_prototype[:M]
+			validation_prototype = val_dataset_prototype[:M]
+
 		elif args.mode == 'train_in_cluster':
 			if args.seed_cluster_path_idx is None:
 				idx = np.random.randint(len(params['storage_names']))
@@ -360,16 +401,27 @@ if __name__ == '__main__':
 			cluster = build_a_cluster(params, storage_filelist,
 			                          sample_k_paths=args.sample_k_paths_train,
 			                          storage_dir=args.storage_dir, idx=idx)
+
 			validation_path = find_closest_path_cluster(cluster, storage_filelist)
-			dataset_prototype = build_whole_dataset_parametrised(xgrid, cluster, Ninter=args.Ninter)
-			train_dataset = DatasetParametrised(xgrid, dataset_prototype, max_polynomial_degree=args.max_n_coefs)
+
+			train_dataset_prototype, train_time_indices, pos_arrays = build_whole_dataset_parametrised(xgrid, cluster,
+			                                                                                           Ninter=args.Ninter,
+			                                                                                           return_rarified_pos_arr=True)
+			train_dataset = DatasetParametrised(xgrid, train_dataset_prototype, max_polynomial_degree=args.max_n_coefs)
+			M = train_time_indices.shape[0]
+			dataset_prototype = train_dataset_prototype[:M]
+			train_pos_array = pos_arrays[0]
 			input_size = train_dataset.input_size
+
+		elif args.mode == 'train_in_out':
+			pass
+
 		elif args.mode == 'train_one_path':
 			trunc_params = {}
 			for key, items in params.items():
 				trunc_params[key] = [items[0]] # this can be randomised as well
-			dataset_prototype = build_whole_dataset_parametrised(xgrid, trunc_params,
-			                                                     Ninter=args.Ninter, stop_at_k=stop_at_k)
+			dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, trunc_params,
+			                                                                         Ninter=args.Ninter, stop_at_k=stop_at_k)
 			dataset = DatasetParametrised(xgrid, dataset_prototype, max_polynomial_degree=args.max_n_coefs)
 			train_length = int(0.75*len(dataset))
 			train_dataset, val_dataset = random_split(dataset, lengths=[train_length, len(dataset) - train_length])
@@ -377,6 +429,7 @@ if __name__ == '__main__':
 
 			validation_path = find_closest_path((trunc_params['alphas'][0], trunc_params['multipliers'][0]),
 			                                    storage_filelist=os.listdir(args.storage_dir))
+			M = train_time_indices.shape[0]
 		else:
 			raise NotImplementedError
 
@@ -384,9 +437,11 @@ if __name__ == '__main__':
 			validation_params = path_to_params(validation_path, return_dict=True, return_as_list=True)
 			validation_params["storage_names"] = [os.path.join(args.storage_dir, validation_path)]
 			print(validation_params)
-			validation_prototype = build_whole_dataset_parametrised(xgrid, validation_params,
-			                                                        Ninter=args.Ninter, stop_at_k=stop_at_k)
+			validation_prototype, val_time_indices, val_pos_array = build_whole_dataset_parametrised(xgrid, validation_params,
+			                                                        Ninter=args.Ninter, stop_at_k=stop_at_k,
+			                                                                          return_rarified_pos_arr=True)
 			val_dataset = DatasetParametrised(xgrid, validation_prototype, max_polynomial_degree=args.max_n_coefs)
+			val_pos_array = val_pos_array[0]
 
 		train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
 		val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
@@ -402,18 +457,27 @@ if __name__ == '__main__':
 		else:
 			loss_fn = time_sensitive_loss
 
+		tidx = np.linspace(0, M-2, num=9, dtype=int)
 		evaluator_kwargs = dict(network=model,
 		                      xgrid=xgrid,
-		                      time_indices=[1, 10, 75, 100, 150, 200, 250, 300],
+		                      time_indices=tidx,
 		                      dt=dt, eps=eps)
 		evaluator = Evaluator(proto_dataset=dataset_prototype, **evaluator_kwargs)
 
-		train_over_epochs(10, train_loader, val_loader,
+		train_over_epochs(args.no_epochs, train_loader, val_loader,
 		                  model, opt, loss_fn, max_batches=args.max_batches)
 
 		os.makedirs(args.figure_dir, exist_ok=True)
 		evaluator.evaluate_grid(figure_fpath=os.path.join(args.figure_dir, "train.png"))
+		if train_pos_array is not None:
+			fpath = os.path.join(args.figure_dir, "train_path_evaluation.png")
+			evaluator.evaluate_trajectory_exact(xinit=0, pos_arr=train_pos_array,
+		                                    time_indices=train_time_indices, plot_fpath=fpath)
 
 		if validation_prototype is not None:
 			evaluator_on_unseen = Evaluator(proto_dataset=validation_prototype, **evaluator_kwargs)
 			evaluator_on_unseen.evaluate_grid(figure_fpath=os.path.join(args.figure_dir, "validation.png"))
+			if val_pos_array is not None:
+				fpath = os.path.join(args.figure_dir, "val_path_evaluation.png")
+				evaluator_on_unseen.evaluate_trajectory_exact(xinit=0, pos_arr=val_pos_array,
+			                                                time_indices=val_time_indices, plot_fpath=fpath)
