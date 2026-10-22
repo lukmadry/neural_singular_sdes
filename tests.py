@@ -5,7 +5,7 @@ import numpy as np
 import h5py
 import json
 
-from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster
+from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params
 from train_nn_on_drifts import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised
 
 class TestDatasetBuilding(unittest.TestCase):
@@ -60,7 +60,7 @@ class TestDatasetBuilding(unittest.TestCase):
 		with open(self.param_dict_fpath) as f:
 			param_dict = json.load(f)
 
-		all_dataset = build_whole_dataset_parametrised(self.xgrid, param_dict, self.Ninter, stop_at_k=2)
+		all_dataset, _ = build_whole_dataset_parametrised(self.xgrid, param_dict, self.Ninter, stop_at_k=2)
 		self.assertEqual(len(all_dataset), 3*4) # the cutoff for testing is sharp, i.e. > not >=
 		self.all_dataset = all_dataset
 
@@ -100,6 +100,11 @@ class TestTrajectoryFinder(unittest.TestCase):
 
 	alphas_nonempty_inter_wrong = [0.30, 0.305]
 	multipliers_nonempty_inter_wrong = [1, 1.05]
+
+	params_for_inout = {"alphas": [0.3, 0.31, 0.32, 0.322, 0.324, 0.33, 0.331, 0.329, 0.34, 0.35, 0.345], # 11 in total
+	                    "mults": [1, 1.1, 1.05, 1.03, 1.09, 1.08, 1.07, 1.04, 1.02, 1.11, 1.12]}
+
+	params_ranges = {"alphas": [0.32, 0.3401], "mults": [1.019, 1.099]} # 6 alphas in, 7 for mults, 6 common for both, 4 totally out
 
 	def test_onepath_closest_finder(self):
 
@@ -142,6 +147,22 @@ class TestTrajectoryFinder(unittest.TestCase):
 		cluster = build_a_cluster(params, st_list, 2)
 		self.assertEqual(cluster['alphas'], [0.33, 0.33, 0.32])
 		self.assertEqual(cluster['multipliers'], [1.19, 1.2, 1.25])
+
+	def test_inout_filtering(self):
+
+		params_in, params_partout, params_tot_out = filter_params(self.params_for_inout,
+		                                                          self.params_ranges)
+
+		self.assertEqual(len(params_in["alphas"]), 6)
+		self.assertEqual(len(params_in['mults']), 6)
+
+		self.assertEqual(len(params_tot_out["alphas"]), 4)
+		self.assertEqual(len(params_tot_out["mults"]), 4)
+
+		self.assertEqual(len(params_partout["alphas"]), 1)
+		self.assertEqual(len(params_partout["mults"]), 1)
+
+		self.assertEqual(params_in["alphas"], [0.322, 0.324, 0.33, 0.331, 0.329, 0.34])
 
 
 class TestEval(unittest.TestCase):

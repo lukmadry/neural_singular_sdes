@@ -127,6 +127,41 @@ def build_a_cluster(params, storage_filelist, sample_k_paths,
 
 	return trunc_params
 
+# TODO test it
+def filter_params(params, param_ranges):
+	params_indices_in = []
+	params_indices_partially_out = []
+	params_indices_tot_out = []
+
+	keys = list(param_ranges.keys())
+	all_keys = list(params.keys())
+	K = len(keys)
+	N = len(params[keys[0]])
+	for i in range(N):
+		nr_in = 0
+		for key in keys:
+			if param_ranges[key][1] > params[key][i] > param_ranges[key][0]:
+				nr_in += 1
+		if nr_in == K:
+			params_indices_in.append(i)
+		elif nr_in == 0:
+			params_indices_tot_out.append(i)
+		else:
+			params_indices_partially_out.append(i)
+
+	params_in = {}
+	params_part_out = {}
+	params_tot_out = {}
+
+	keys_params = list(params.keys())
+
+	for idx_list, output_dict in zip([params_indices_in, params_indices_partially_out, params_indices_tot_out],
+	                                 [params_in, params_part_out, params_tot_out]):
+		for key in keys_params:
+			output_dict[key] = [params[key][i] for i in idx_list]
+
+	return params_in, params_part_out, params_tot_out
+
 # this is just a convenience structure for input data, not a Dataset in a PyTorch sense which needs to provide outputs as well
 class OneFunctionOnAGrid:
 	def __init__(self, xgrid, alpha, multip, coefs, eps, times=None,
@@ -160,8 +195,25 @@ class OneFunctionOnAGrid:
 		arr[:, self.no_param + 1] = self.xgrid
 		return arr
 
+	def create_input_with_time_and_pos(self, time, pos):
+		arr = np.zeros((1, self.input_size))
+		arr[:, 0] = self.alpha
+		arr[:, 1] = self.multip
+		arr[:, 2:2 + self.max_degree] = self.coefs.reshape(1, -1)
+		arr[:, self.no_param] = time
+		arr[:, self.no_param + 1] = pos
+		return arr
+
 	def _input_pos_arr(self, pos_arr):
-		pass
+		self._pos_arr = pos_arr
+
+	def apply_fn_pos_arr(self, x, tidx, pos_arr):
+		diffs = x - pos_arr[tidx, :]
+		return self.fn(diffs).mean()
+
+	def apply_fn(self, x, tidx):
+		diffs = x - self._pos_arr[tidx, :]
+		return self.fn(diffs).mean()
 
 	def __getitem__(self, index):
 		return self.inputs[index]
