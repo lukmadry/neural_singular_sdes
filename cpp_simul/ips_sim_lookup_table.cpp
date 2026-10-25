@@ -95,7 +95,7 @@ void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::vector
 	const double lookup_table_max = 15.0; // TODO choose this by checking the gaussian tail estimates
 	const int lookup_table_size = static_cast<int>(lookup_table_max / lookup_table_grid_step);
 
-	const double multiplier = 1;
+	const double multiplier = multip_arg;
 	const int taylor_coef_len = p_degree;
 
 	int current_pos_to_save = 0;
@@ -176,7 +176,7 @@ void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::vector
 			// vdPow(N, abs_diffs.data(), p_vec.data(), pow_results.data());
 
 			// std::cout << "we reach here2" << std::endl;
-			compute_polynom_horner(diffs.data(), taylor_coefs, taylor_ptr, N, taylor_coef_len);
+			// compute_polynom_horner(diffs.data(), taylor_coefs, taylor_ptr, N, taylor_coef_len);
 			double sum = 0.0;
 
 			// std::cout << "we reach here3" << std::endl;

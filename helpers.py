@@ -3,6 +3,7 @@ import os
 import json
 
 from collections import Counter
+from scipy.integrate import trapezoid
 
 def compare_dimensions(x, y):
 	if isinstance(x, list) and isinstance(y, np.ndarray):
@@ -22,6 +23,7 @@ def none_sentinel(arg1, arg2):
 	elif arg1 is None and arg2 is None:
 		raise ValueError
 
+
 def build_progress_bar(i, M, length=50, p_sign='@'):
 	prop = int(float(i)/float(M)* length)
 	s = "[" + p_sign * prop + '_' * (length - prop) + "]" + f" {100*float(i/M):.2f}%"
@@ -34,7 +36,8 @@ def update_json(filename, json_dict):
 		keys = set(json_dict.keys()) & set(new_json.keys())
 
 		for key in keys:
-			new_json[key].extend(json_dict[key])
+			if new_json[key] is not None: # it's either None or a list
+				new_json[key].extend(json_dict[key])
 
 		with open(filename, "w") as f:
 			json.dump(new_json, f)
@@ -220,3 +223,83 @@ class OneFunctionOnAGrid:
 
 	def __len__(self):
 		return self.inputs.shape[0]
+
+# TODO to be tested separately
+def redistribute_points_inside_bin(counts, bin_idx_left, bin_idx_right, density,
+                                   grid, subbin_count=10):
+	if counts == 0:
+		return np.zeros(subbin_count)
+	dx = grid[1] - grid[0]
+	probas = []
+	idx_l = bin_idx_left
+	jump = (bin_idx_right - bin_idx_left) // subbin_count
+	idx_h = idx_l + jump
+	for i in range(subbin_count):
+		probas.append(trapezoid(density[idx_l:idx_h], grid[idx_l:idx_h], dx))
+		idx_l = idx_h
+		idx_h += jump
+
+	probas = np.array(probas)
+	probas /= probas.sum()
+	weighted_counts = np.array(counts * probas, dtype=int)
+	if sum(weighted_counts) < counts.sum():
+		added_counts = np.random.choice(a=subbin_count, size=counts.sum() - sum(weighted_counts), p=probas)
+		for a in added_counts:
+			weighted_counts[a] += 1
+	return weighted_counts
+
+def sample_full_dist(total_nr_samples, dense_grid, very_dense_density, init_bins=30,
+                     subbin_cnt=10, second_level_refinement=True):
+	bins = np.linspace(-5, 5, num=init_bins, endpoint=True)
+	idx_l = 0
+	cnts = []
+	dx = dense_grid[1] - dense_grid[0]
+	for i in range(bins.shape[0]-1):
+		l, h = bins[i], bins[i+1]
+		idx_h = idx_l + int((h - l) / dx)+1
+		integral_lh = trapezoid(very_dense_density[idx_l:idx_h], dense_grid[idx_l:idx_h], dx)
+		cnts.append(integral_lh)
+		idx_l = idx_h
+
+	cnts = np.array(cnts)
+	counts = np.array(cnts * total_nr_samples, dtype=int)
+
+	if second_level_refinement:
+		idx_l = 0
+		# dense_grid = np.linspace(-5, 5, num=10000)
+		# dx = dense_grid[1] - dense_grid[0]
+		all_samples = []
+		for i in range(bins.shape[0]-1):
+			l, h = bins[i], bins[i+1]
+			idx_h = idx_l + int((h - l) / dx)+1
+			counts_redistributed = redistribute_points_inside_bin(counts[i], idx_l, idx_h,
+										   very_dense_density, dense_grid)
+			subbins = np.linspace(bins[i], bins[i+1], num=subbin_cnt, endpoint=True)
+			for j in range(subbin_cnt-1):
+				if counts_redistributed[j] > 0:
+					new_values = np.random.uniform(low=subbins[j],
+												  high=subbins[j+1],
+												  size=counts_redistributed[j])
+					all_samples.extend(new_values)
+
+	else:
+		all_samples = []
+		for i in range(bins.shape[0]-1):
+			all_samples.extend(np.random.uniform(low=bins[i], high=bins[i+1], size=counts[i]))
+
+	return all_samples
+
+def interpolate_pdfs(pdf_one, pdf_two, no_dists):
+	if pdf_one.shape != pdf_two.shape:
+		raise ValueError("pdf_one and pdf_two should have identical shapes")
+
+	if pdf_one.ndim > 1:
+		raise ValueError("pdf_one must have one dimension")
+
+	new_pdfs = np.zeros((no_dists, pdf_one.shape[0]))
+	weights = np.linspace(0, 1, num=no_dists, endpoint=True)
+	for i, w in enumerate(weights):
+		pdf = pdf_one * (1-w) + pdf_two * w
+		new_pdfs[i, :] = pdf
+
+	return new_pdfs

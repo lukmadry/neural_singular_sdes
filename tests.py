@@ -6,7 +6,9 @@ import h5py
 import json
 
 from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params
-from train_nn_on_drifts import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised
+from train_nn_on_drifts import (build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised,
+                                sample_interaction_parameters, create_runner_sh_script)
+from mixtures import parse_dist_config_file, generate_and_dump_distributions
 
 class TestDatasetBuilding(unittest.TestCase):
 
@@ -163,6 +165,91 @@ class TestTrajectoryFinder(unittest.TestCase):
 		self.assertEqual(len(params_partout["mults"]), 1)
 
 		self.assertEqual(params_in["alphas"], [0.322, 0.324, 0.33, 0.331, 0.329, 0.34])
+
+
+class TestGenerationInitDist(unittest.TestCase):
+
+	dist_config_file_full_path = "tests/init_dist_moving_gaussian/config_file.txt"
+	init_dist_dir = "tests/init_dist_moving_gaussian"
+	storage_dir = "tests/storage_trajs"
+	fnames = [f"mixture_{i}.hdf5" for i in range(5)]
+	N = 10
+	alph_range = (0.3, 0.35)
+	mult_range = (1, 1.5)
+	alphas = [0.3, 0.32, 0.305, 0.315]
+	multips = [1.1, 1.2, 1.15, 1.02]
+	cpp_fpath = "cpp_simul/ips_sim_lookup_table_load_init_dist.cpp"
+	compilation_path = "cpp_simul/sde_mkl_w_lt_and_load_id"
+
+	target_s = ("./cpp_simul/sde_mkl_w_lt_and_load_id --a 0.3 --m 1.1 --distname {dist_one} "
+	            "--f {storage_dir}/N_{inter_one}_alph_0.3_mult_1.1_init_dist_mixture_0.hdf5\n"
+	            "./cpp_simul/sde_mkl_w_lt_and_load_id --a 0.32 --m 1.2 --distname {dist_two}"
+	            " --f {storage_dir}/N_{inter_two}_alph_0.32_mult_1.2_init_dist_mixture_1.hdf5\n")
+
+	dist_text_result = [["gauss -1 0.25"], ["gauss 1 0.25"]]
+
+	def test_reading_config_file(self):
+		dist_texts = parse_dist_config_file(self.dist_config_file_full_path)
+		self.assertEqual(dist_texts, [["gauss -1 0.25"], ["gauss 1 0.25"]])
+
+	def test_generating_dist_interpolated_mixts(self):
+
+		filenames, dist_sizes = generate_and_dump_distributions(self.dist_text_result[0],
+					                                            self.dist_text_result[1],
+					                                            n_dist=5,
+					                                            n_samples=400, samples_dir=self.init_dist_dir)
+
+		with open(os.path.join(self.init_dist_dir, "distribution_logfile.txt"), "r") as f:
+			logfile = f.readlines()
+			for l in logfile:
+				fn, nr = l.split("|||")
+				nr = int(nr.strip("\n"))
+				self.assertEqual(dist_sizes[fn], nr)
+
+		self.assertEqual(len(filenames), 5)
+		for f, testf in zip(filenames, self.fnames):
+			self.assertEqual(f, os.path.join(self.init_dist_dir, testf))
+
+		means = []
+		for f in filenames:
+			with h5py.File(f, "r") as f:
+				dist = f['init_distribution'][:]
+			means.append(np.mean(dist))
+
+		means = np.array(means)
+		self.assertTrue(np.all(np.diff(means) > 0))
+
+		for key, val in dist_sizes.items():
+			self.assertTrue(val > 300)
+
+	def test_sample_interaction_params_with_dists(self):
+
+		alphas, multips, coefs, distnames = sample_interaction_parameters(self.N, self.alph_range, self.mult_range,
+										                              init_dist_dir=self.init_dist_dir,
+										                              with_polynomial=False)
+
+		self.assertIsNotNone(distnames)
+		self.assertIsNone(coefs)
+
+		for d in distnames:
+			self.assertTrue(os.path.exists(d))
+
+		_, dist_sizes = generate_and_dump_distributions(self.dist_text_result[0],
+		                                                        self.dist_text_result[1],
+		                                                        n_dist=5,
+		                                                        n_samples=100, samples_dir=self.init_dist_dir)
+
+		mixtures = [os.path.join(self.init_dist_dir, "mixture_0.hdf5"), os.path.join(self.init_dist_dir, "mixture_1.hdf5")]
+		ninters = [str(dist_sizes[x]) for x in mixtures]
+		s, snames = create_runner_sh_script(self.compilation_path, self.cpp_fpath,
+		                                    alphas=self.alphas[:2], multips=self.multips[:2],
+		                                    add_compilation=False, storage_dir=self.storage_dir,
+		                                    Ninter=dist_sizes, init_distributions=mixtures)
+
+		target_string = (self.target_s.replace("{dist_one}", mixtures[0]).replace("{dist_two}", mixtures[1])
+		                 .replace("{storage_dir}", self.storage_dir).replace("{inter_one}", ninters[0]).replace("{inter_two}", ninters[1]))
+
+		self.assertEqual(s, target_string)
 
 
 class TestEval(unittest.TestCase):

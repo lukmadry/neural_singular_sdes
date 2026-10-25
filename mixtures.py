@@ -1,6 +1,9 @@
 import numpy as np
+import os
+import h5py
 from scipy.stats import norm, multivariate_normal, uniform, pareto
 from numbers import Number
+from helpers import interpolate_pdfs, sample_full_dist
 
 # TODO I realised when this was already well underway that scipy stats has an interface for mixtures, which would be
 # probably cleaner to use. the advantage of my version is that it handles automatically flipping pareto, which is not so clear
@@ -259,6 +262,7 @@ def build_spiral_distribution(n_samples, sigma):
 	gm = GaussianMixture(centers=samples, scales=sigma)
 	return gm
 
+# TODO I learned about existence of YAML afterwards, consider migrating config file later to it
 def build_distribution_from_text(text):
 	if isinstance(text, str):
 		lines = text.split("\n")
@@ -323,3 +327,70 @@ def build_distribution_from_text(text):
 		paretor = ParetoMixture(centers=paretos_c, scales=paretos_s, b=paretos_b, weights=paretos_weights)
 		mixture.extend(paretor)
 	return mixture
+
+def interpolate_mixtures(mixture_one, mixture_two, w):
+
+	if not isinstance(w, float):
+		raise TypeError("w should be a float")
+	if not 1 >= w >= 0:
+		raise ValueError("w should be a positive integer between 0 and 1")
+	m = Mixture()
+	m.extend(mixture_one)
+	nmone = len(mixture_one)
+	for i in range(nmone):
+		m.weights[i] = w
+	m.extend(mixture_two)
+	nmtwo = len(mixture_two)
+	for i in range(nmtwo):
+		m.weights[i] = 1-w
+	return m
+
+def generate_and_dump_distributions(textone, texttwo, n_dist, samples_dir, n_samples = 400):
+
+	mixture_one = build_distribution_from_text(textone)
+	mixture_two = build_distribution_from_text(texttwo)
+	os.makedirs(samples_dir, exist_ok=True)
+	filenames = []
+	dist_sizes = {}
+	weights = np.linspace(0, 1, num=n_dist, endpoint=True)
+	for i in range(n_dist):
+		m = interpolate_mixtures(mixture_one, mixture_two, weights[i])
+		samples = m.rvs(n_samples)
+		# TODO experiment with sampling 100 times and picking the one that has the best distribution
+		# for instance say that we impose symmetry and we check how good the symmetry is
+		# or maybe we can impose the symmetry by hand ?
+		#samples = sample_full_dist(n_samples, dense_grid=grid, very_dense_density=pdf, second_level_refinement=True)
+		fname = os.path.join(samples_dir, "mixture_" + str(i) + ".hdf5")
+		with h5py.File(fname, "w") as f:
+			f.create_dataset("init_distribution", data=samples)
+		filenames.append(fname)
+		dist_sizes[fname] = len(samples)
+
+	with open(os.path.join(samples_dir, "distribution_logfile.txt"), "w") as f:
+		info_to_dump = ""
+		for fname, s in dist_sizes.items():
+			info_to_dump += f"{fname}|||{s}\n"
+		f.write(info_to_dump)
+	return filenames, dist_sizes
+
+def parse_dist_config_file(dist_config_file):
+	with open(dist_config_file, "r") as f:
+		config = f.readlines()
+	if config[0] != 'DIST_ONE\n':
+		raise ValueError(f"incorrect config file format, instead of DIST_ONE we got {config[0]}")
+	curr_dist_nr = 1
+	distributions_texts = []
+	curr_dist = []
+	for line in config[1:]:
+		if not line.startswith("DIST"):
+			curr_dist.append(line.strip("\n"))
+		else: # new distribution
+			curr_dist_nr += 1
+			distributions_texts.append(curr_dist)
+			curr_dist = []
+
+	distributions_texts.append(curr_dist)
+	if curr_dist_nr != len(distributions_texts): # essentially a sanity check
+		raise ValueError(f"incorrect config file format, we have {len(distributions_texts)} distributions, but"
+		                 f" the number of distributions counted is {curr_dist_nr}")
+	return distributions_texts

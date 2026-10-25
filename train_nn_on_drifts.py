@@ -1,10 +1,10 @@
 import os
-from signal import valid_signals
 
 import h5py
 import numpy as np
 import argparse
 import time
+import itertools
 
 import json
 from os import makedirs
@@ -15,30 +15,65 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from nets import get_model
 from helpers import update_json, build_progress_bar, function_factory, path_to_params, find_closest_path, \
 	find_closest_path_cluster, build_a_cluster
+from mixtures import parse_dist_config_file, generate_and_dump_distributions
 from evals import Evaluator
 
-# TODO create two evaluators, one for training set and one for validation set. After each epoch do a check on these evaluators and dump the result somewehere
 # TODO refactor so that this is a main short file which provides access to a backend
 # TODO add CI/CD run using this loop
 
-def sample_interaction_parameters(N, max_n_coefs, alph_range, multip_range, coefs_range):
+# think about how to best parametrise distributions
+# in the directory you should have some parameters of the distribution. Let us maybe first try moving gaussian
+# so that it is easy to parametrise and do interpolation/extrapolation thing later
+# or just some shape that's moving from left to right so that we can parametrise it with a single number
+def sample_interaction_parameters(N, alph_range, multip_range, coefs_range=None,
+                                  init_dist_dir=None, with_polynomial=False, max_n_coefs=None, ret_full_paths=True):
 	"""
 
-	:param N:
-	:param alph_range:
-	:param multip_range:
-	:param coefs_range:
-	:return:
+	TODO
 	"""
 	alphas = np.random.uniform(alph_range[0], alph_range[1], N)
 	multips = np.random.uniform(multip_range[0], multip_range[1], N)
-	n_coefs = np.random.randint(low=2, high=max_n_coefs, size=N) # low=2 is there because of Horner method in cpp file
-	coefs = [[np.random.uniform(low=coefs_range[0], high=coefs_range[1]) for _ in range(k)] for k in n_coefs]
-	return alphas, multips, coefs
 
-def create_runner_sh_script(compilation_fpath, cpp_file_fpath, Ninter, alphas, multips, coefs,
-                            return_storage_fnames=True, add_compilation=True,
-                            compilation_template=None, storage_dir="storage"):
+	if with_polynomial:
+		if coefs_range is None and max_n_coefs is None:
+			raise ValueError("if with_polynomial == True, then you need to pass range of coefs and their max nr")
+		n_coefs = np.random.randint(low=2, high=max_n_coefs,
+		                            size=N)  # low=2 is there because of Horner method in cpp file
+		coefs = [[np.random.uniform(low=coefs_range[0], high=coefs_range[1]) for _ in range(k)] for k in n_coefs]
+	else:
+		coefs = None
+
+	if init_dist_dir is not None:
+		all_files = [x for x in os.listdir(init_dist_dir) if x.endswith(".hdf5")]
+		dist_idx = np.random.choice(len(all_files), size=N, replace=True)
+		dist_files = [all_files[i] for i in dist_idx]
+		if ret_full_paths:
+			dist_files = [os.path.join(init_dist_dir, x) for x in dist_files]
+	else:
+		dist_files = None
+	return alphas, multips, coefs, dist_files
+
+
+
+def create_runner_sh_script(compilation_fpath, cpp_file_fpath, alphas, multips, coefs=None,
+                            return_storage_fnames=True, add_compilation=True, Ninter=None,
+                            compilation_template=None, storage_dir="storage", init_distributions=None):
+	"""
+
+	:param compilation_fpath:
+	:param cpp_file_fpath:
+	:param alphas:
+	:param multips:
+	:param coefs:
+	:param return_storage_fnames:
+	:param add_compilation:
+	:param Ninter: int or a dict str -> int, where str is a filepath to an initial_distribution and int is
+	    a corresponding Ninter
+	:param compilation_template:
+	:param storage_dir:
+	:param init_distributions:
+	:return:
+	"""
 	big_script = ""
 	if add_compilation:
 		if compilation_template is None or compilation_fpath is None:
@@ -49,21 +84,48 @@ def create_runner_sh_script(compilation_fpath, cpp_file_fpath, Ninter, alphas, m
 		big_script += '\nprintf "finished compilation"\n'
 	if return_storage_fnames:
 		storages = []
-	for local_alph, local_multip, local_coefs in zip(alphas, multips, coefs):
-		s = f"./{compilation_fpath} --N {Ninter} --a {local_alph} --m {local_multip} "
-		storage_filename = (f"{storage_dir}/N_{Ninter}_alph_{local_alph}_mult_{local_multip}_coefs_" +
-		                    "_".join([str(x) for x in local_coefs]) + ".hdf5")
-		s += "--f " + storage_filename
-		s +=  f" --p {len(local_coefs)}"
-		for coef in local_coefs:
-			s += f" {coef}"
-		big_script += s + "\n"
-		if return_storage_fnames:
-			storages.append(storage_filename)
+
+	if Ninter is None:
+		raise ValueError("Ninter has to be either int or a dict of ints")
+	elif not isinstance(Ninter, (int, dict)):
+		raise TypeError("Ninter has to be either int or a dict of ints")
+
+	dist_name_iterator = init_distributions if init_distributions is not None else itertools.repeat(None)
+	if init_distributions is None:
+		ninter_iterator = itertools.repeat(Ninter)
+	else:
+		ninter_iterator = [Ninter[x] for x in dist_name_iterator]
+	if coefs is not None:
+		for loc in zip(alphas, multips, coefs, dist_name_iterator, ninter_iterator):
+			local_alph, local_multip, local_coefs, local_distname, local_ninter = loc
+			s = f"./{compilation_fpath} --a {local_alph} --m {local_multip} --distname {local_distname} "
+			storage_filename = (f"{storage_dir}/N_{local_ninter}_alph_{local_alph}_mult_{local_multip}_coefs_" +
+			                    "_".join([str(x) for x in local_coefs]) + ".hdf5")
+			s += "--f " + storage_filename
+			s +=  f" --p {len(local_coefs)}"
+			if local_distname is None:
+				s += f"--N {Ninter}"
+			for coef in local_coefs:
+				s += f" {coef}"
+			big_script += s + "\n"
+			if return_storage_fnames:
+				storages.append(storage_filename)
+	else:
+		for loc in zip(alphas, multips, dist_name_iterator, ninter_iterator):
+			local_alph, local_multip, local_distname, local_ninter = loc
+			s = f"./{compilation_fpath} --a {local_alph} --m {local_multip} --distname {local_distname} "
+			if local_distname.endswith(".hdf5"):
+				local_distname = local_distname.strip(".hdf5")
+				local_distname = local_distname.split("/")[-1]
+			storage_filename = (f"{storage_dir}/N_{local_ninter}_alph_{local_alph}_mult_{local_multip}_" +
+			                    f"init_dist_{local_distname}.hdf5")
+			s += "--f " + storage_filename
+			if return_storage_fnames:
+				storages.append(storage_filename)
+			big_script += s + "\n"
 	if return_storage_fnames:
 		return big_script, storages
 	return big_script
-
 
 def compute_drift_vec(arr, positions, fn):
 	diffs = arr[:, None] - positions[None, :]
@@ -296,11 +358,16 @@ if __name__ == '__main__':
 	parser.add_argument("--coefs_range", nargs=2, type=float, default=(-0.1, 0.1))
 	parser.add_argument("--max_n_coefs", type=int, default=5)
 
-
+	# generation parameters
 	parser.add_argument("--N", type=int)
 	parser.add_argument("--Ninter", type=int, default=200)
 	parser.add_argument("--script_filepath", type=str, required=True)
 	parser.add_argument("--add_compilation", action=argparse.BooleanOptionalAction)
+	parser.add_argument("--add_distribution_generation", action=argparse.BooleanOptionalAction, default=False)
+	parser.add_argument("--dist_config_file", type=str, default=None)
+	parser.add_argument("--n_dist", type=int, default=10)
+	parser.add_argument("--samples_dir", type=str)
+	parser.add_argument("--with_polynomial", action=argparse.BooleanOptionalAction, default=False)
 	parser.add_argument("--compilation_template_fpath", type=str,
 	                    default="cpp_simul/cpp_ips_template_compilation.sh")
 	parser.add_argument("--compiled_file", type=str,
@@ -340,17 +407,43 @@ if __name__ == '__main__':
 	dt = 1000 * small_dt
 
 	if args.mode == 'generate':
-		alphas, multips, coefs = sample_interaction_parameters(args.N, args.max_n_coefs, args.alpha_range,
-		                                                       args.multiple_range, args.coefs_range)
+		n_inter = None
+		if args.n_dist is None:
+			raise ValueError("n_dist cannot be None in the generation mode")
+		if args.add_distribution_generation:
+			if args.dist_config_file is None:
+				dist_conf_full_path = os.path.join(args.samples_dir, "config_file.txt")
+				if not os.path.exists(dist_conf_full_path):
+					raise ValueError(f"you did not specify dist_config_file and the default value does not exist in {args.samples_dir}")
+			else:
+				dist_conf_full_path = os.path.join(args.samples_dir, args.dist_config_file)
+				if not os.path.exists(dist_conf_full_path):
+					raise ValueError(f"The only possible path for dist_config_file is inside samples_dir, "
+					                 f"{dist_conf_full_path} does not exist")
+			distribution_files = parse_dist_config_file(dist_conf_full_path)
+			_, n_inter = generate_and_dump_distributions(distribution_files[0], distribution_files[1],
+			                                            args.n_dist, args.samples_dir, n_samples=args.Ninter)
+
+		alphas, multips, coefs, distnames = sample_interaction_parameters(args.N, args.alpha_range,
+		                                                                    args.multiple_range, args.coefs_range,
+		                                                                    init_dist_dir=args.samples_dir,
+		                                                                    with_polynomial=args.with_polynomial,
+		                                                                    max_n_coefs=args.max_n_coefs)
 		alphas = [float(a) for a in alphas]
 		multips = [float(m) for m in multips]
-		coefs = [[float(c) for c in clist] for clist in coefs]
+		if args.with_polynomial:
+			coefs = [[float(c) for c in clist] for clist in coefs]
+		else:
+			coefs = None
+		if n_inter is None:
+			n_inter = args.Ninter
 		script, storage_names = create_runner_sh_script(args.compiled_file, args.cpp_file_fpath,
-		                                                args.Ninter, alphas, multips, coefs,
+		                                                alphas, multips, coefs,
 		                                                add_compilation=args.add_compilation,
 		                                                return_storage_fnames=True,
 		                                                compilation_template=args.compilation_template_fpath,
-		                                                storage_dir=args.storage_dir
+		                                                storage_dir=args.storage_dir,
+		                                                init_distributions=distnames, Ninter=n_inter,
 		                                                )
 		with open(args.script_filepath, "w") as f:
 			f.write(script)
@@ -359,6 +452,9 @@ if __name__ == '__main__':
 		                                  "coefs": coefs, "storage_names": storage_names})
 
 		makedirs(args.storage_dir, exist_ok=True)
+
+		print(f"Generation ended successfully. Distributions can be found in: {args.samples_dir}\n"
+		      f"Script that will run generation is in {args.script_filepath}\n")
 
 	elif args.mode.startswith("train"):
 		with open(params_to_save_path, "r") as f:
