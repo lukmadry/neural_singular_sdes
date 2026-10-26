@@ -1,9 +1,11 @@
 import numpy as np
 import os
 import json
+import h5py
 
 from collections import Counter
 from scipy.integrate import trapezoid
+from scipy.stats import norm, uniform
 
 def compare_dimensions(x, y):
 	if isinstance(x, list) and isinstance(y, np.ndarray):
@@ -130,6 +132,28 @@ def build_a_cluster(params, storage_filelist, sample_k_paths,
 
 	return trunc_params
 
+# essentially a join
+def update_param_file_with_dist_data(params, distribution_logfile_path):
+	with open(distribution_logfile_path, "r") as f:
+		logfile = f.readlines()
+
+	mixt_dict = {}
+	for line in logfile:
+		parts = line.strip("\n").split("|||")
+		mean, scale = float(parts[-2].lstrip("loc: ")), float(parts[-1].lstrip("scale: "))
+		fname = parts[0].split("/")[-1].strip(".hdf5")
+		mixt_dict[fname] = {"loc": mean, "scale": scale}
+
+	loc_arr = []
+	scale_arr = []
+	for fname in params['storage_names']:
+		distname_clear = "mixture_" + fname.split("_")[-1].split(".")
+		loc_arr.append(mixt_dict[distname_clear])
+		scale_arr.append(mixt_dict[distname_clear])
+	params['loc'] = loc_arr
+	params['scale'] = scale_arr
+	return params
+
 # TODO test it
 def filter_params(params, param_ranges):
 	params_indices_in = []
@@ -225,10 +249,14 @@ class OneFunctionOnAGrid:
 		return self.inputs.shape[0]
 
 # TODO to be tested separately
-def redistribute_points_inside_bin(counts, bin_idx_left, bin_idx_right, density,
-                                   grid, subbin_count=10):
+def redistribute_points_inside_bin(counts, grid, density, bin_idx_left=None,
+                                   bin_idx_right=None, subbin_count=10, return_rounded_val=False):
 	if counts == 0:
 		return np.zeros(subbin_count)
+	if bin_idx_left is None:
+		bin_idx_left = 0
+	if bin_idx_right is None:
+		bin_idx_right = grid.shape[0]
 	dx = grid[1] - grid[0]
 	probas = []
 	idx_l = bin_idx_left
@@ -241,53 +269,16 @@ def redistribute_points_inside_bin(counts, bin_idx_left, bin_idx_right, density,
 
 	probas = np.array(probas)
 	probas /= probas.sum()
-	weighted_counts = np.array(counts * probas, dtype=int)
-	if sum(weighted_counts) < counts.sum():
-		added_counts = np.random.choice(a=subbin_count, size=counts.sum() - sum(weighted_counts), p=probas)
-		for a in added_counts:
-			weighted_counts[a] += 1
-	return weighted_counts
-
-def sample_full_dist(total_nr_samples, dense_grid, very_dense_density, init_bins=30,
-                     subbin_cnt=10, second_level_refinement=True):
-	bins = np.linspace(-5, 5, num=init_bins, endpoint=True)
-	idx_l = 0
-	cnts = []
-	dx = dense_grid[1] - dense_grid[0]
-	for i in range(bins.shape[0]-1):
-		l, h = bins[i], bins[i+1]
-		idx_h = idx_l + int((h - l) / dx)+1
-		integral_lh = trapezoid(very_dense_density[idx_l:idx_h], dense_grid[idx_l:idx_h], dx)
-		cnts.append(integral_lh)
-		idx_l = idx_h
-
-	cnts = np.array(cnts)
-	counts = np.array(cnts * total_nr_samples, dtype=int)
-
-	if second_level_refinement:
-		idx_l = 0
-		# dense_grid = np.linspace(-5, 5, num=10000)
-		# dx = dense_grid[1] - dense_grid[0]
-		all_samples = []
-		for i in range(bins.shape[0]-1):
-			l, h = bins[i], bins[i+1]
-			idx_h = idx_l + int((h - l) / dx)+1
-			counts_redistributed = redistribute_points_inside_bin(counts[i], idx_l, idx_h,
-										   very_dense_density, dense_grid)
-			subbins = np.linspace(bins[i], bins[i+1], num=subbin_cnt, endpoint=True)
-			for j in range(subbin_cnt-1):
-				if counts_redistributed[j] > 0:
-					new_values = np.random.uniform(low=subbins[j],
-												  high=subbins[j+1],
-												  size=counts_redistributed[j])
-					all_samples.extend(new_values)
-
+	if return_rounded_val:
+		weighted_counts = np.array(counts * probas, dtype=int)
+		if sum(weighted_counts) < counts:
+			added_counts = np.random.choice(a=subbin_count, size=counts - sum(weighted_counts), p=probas)
+			for a in added_counts:
+				weighted_counts[a] += 1
+		return weighted_counts
 	else:
-		all_samples = []
-		for i in range(bins.shape[0]-1):
-			all_samples.extend(np.random.uniform(low=bins[i], high=bins[i+1], size=counts[i]))
+		return probas
 
-	return all_samples
 
 def interpolate_pdfs(pdf_one, pdf_two, no_dists):
 	if pdf_one.shape != pdf_two.shape:
@@ -303,3 +294,103 @@ def interpolate_pdfs(pdf_one, pdf_two, no_dists):
 		new_pdfs[i, :] = pdf
 
 	return new_pdfs
+
+
+
+def read_dist_from_text(text):
+	if isinstance(text, list):
+		text = text[0]
+	dist_type, mean, var = text.split()
+	if dist_type == 'gauss':
+		return float(mean), float(var), dist_type
+	elif dist_type == 'uniform':
+		return float(mean-var/2), float(var), dist_type
+	else:
+		raise NotImplementedError("dist_type should be 'gauss' or 'uniform'")
+
+
+def generate_and_dump_distributions(textone, texttwo, n_dist, samples_dir, n_samples = 400):
+
+	locone, scaleone, typeone = read_dist_from_text(textone)
+	loctwo, scaletwo, typetwo = read_dist_from_text(texttwo)
+
+	if not typeone == typetwo:
+		raise NotImplementedError("for now two distributions should be from the same family")
+
+	dist = {"gauss": norm, "uniform": uniform}
+
+	os.makedirs(samples_dir, exist_ok=True)
+	filenames = []
+	dist_sizes = {}
+	weights = np.linspace(0, 1, num=n_dist, endpoint=True)
+	dist_datas = []
+	for i in range(n_dist):
+		loc = locone * (1-weights[i]) + loctwo * weights[i]
+		scale = scaleone * (1-weights[i]) + scaletwo * weights[i]
+
+		new_dist = dist[typeone](loc=loc, scale=scale)
+		dist_datas.append((loc, scale))
+		samples = new_dist.rvs(n_samples)
+		# notes - stratified sampling did not seem to have better L2 wasserstein distance
+		# not sure if that's an expected outcome (probably not), but I can't spend whole days on fixing this
+		#samples = sample_full_dist(n_samples, dense_grid=grid, very_dense_density=pdf, second_level_refinement=True)
+		fname = os.path.join(samples_dir, "mixture_" + str(i) + ".hdf5")
+		with h5py.File(fname, "w") as f:
+			f.create_dataset("init_distribution", data=samples)
+		filenames.append(fname)
+		dist_sizes[fname] = {"size": len(samples), "loc": loc, "scale": scale}
+
+	with open(os.path.join(samples_dir, "distribution_logfile.txt"), "w") as f:
+		info_to_dump = ""
+		for fname, s in dist_sizes.items():
+			info_to_dump += f"{fname}|||" + str(s["size"]) + "|||loc: " + str(s["loc"]) + "|||scale: " + str(s["scale"]) + "\n"
+		f.write(info_to_dump)
+	return filenames, dist_sizes
+
+
+def parse_dist_config_file(dist_config_file):
+	with open(dist_config_file, "r") as f:
+		config = f.readlines()
+	if config[0] != 'DIST_ONE\n':
+		raise ValueError(f"incorrect config file format, instead of DIST_ONE we got {config[0]}")
+	curr_dist_nr = 1
+	distributions_texts = []
+	curr_dist = []
+	for line in config[1:]:
+		if not line.startswith("DIST"):
+			curr_dist.append(line.strip("\n"))
+		else: # new distribution
+			curr_dist_nr += 1
+			distributions_texts.append(curr_dist)
+			curr_dist = []
+
+	distributions_texts.append(curr_dist)
+	if curr_dist_nr != len(distributions_texts): # essentially a sanity check
+		raise ValueError(f"incorrect config file format, we have {len(distributions_texts)} distributions, but"
+		                 f" the number of distributions counted is {curr_dist_nr}")
+	return distributions_texts
+
+# this is not idiot-proof but doesn't have to be
+def parse_range_config_file(filepath):
+	with open(filepath, "r") as f:
+		config = f.readlines()
+
+	alphas_range = []
+	multips_range = []
+	means_range = []
+	scales_range = []
+
+	for line in config:
+		param, lower, upper = line.strip("\n").split("|")
+		lower = float(lower)
+		upper = float(upper)
+		if param.upper() == "ALPHA":
+			alphas_range = [lower, upper]
+		elif param.upper() == "MULTIPLIER":
+			multips_range = [lower, upper]
+		elif param.upper() == "MEAN":
+			means_range = [lower, upper]
+		elif param.upper() == "SCALE":
+			scales_range = [lower, upper]
+
+	return {"alphas": alphas_range, "multips": multips_range, "means": means_range, "scales": scales_range}

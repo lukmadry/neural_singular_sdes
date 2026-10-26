@@ -8,7 +8,7 @@ import json
 from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params
 from train_nn_on_drifts import (build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised,
                                 sample_interaction_parameters, create_runner_sh_script)
-from mixtures import parse_dist_config_file, generate_and_dump_distributions
+from helpers import parse_dist_config_file, generate_and_dump_distributions
 
 class TestDatasetBuilding(unittest.TestCase):
 
@@ -202,7 +202,7 @@ class TestGenerationInitDist(unittest.TestCase):
 		with open(os.path.join(self.init_dist_dir, "distribution_logfile.txt"), "r") as f:
 			logfile = f.readlines()
 			for l in logfile:
-				fn, nr = l.split("|||")
+				fn, nr = l.split("|||")[:2]
 				nr = int(nr.strip("\n"))
 				self.assertEqual(dist_sizes[fn], nr)
 
@@ -251,6 +251,8 @@ class TestGenerationInitDist(unittest.TestCase):
 
 		self.assertEqual(s, target_string)
 
+class TestFiltering(unittest.TestCase):
+	pass
 
 class TestEval(unittest.TestCase):
 	pass

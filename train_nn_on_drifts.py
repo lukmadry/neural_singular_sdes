@@ -14,8 +14,8 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 from nets import get_model
 from helpers import update_json, build_progress_bar, function_factory, path_to_params, find_closest_path, \
-	find_closest_path_cluster, build_a_cluster
-from mixtures import parse_dist_config_file, generate_and_dump_distributions
+	find_closest_path_cluster, build_a_cluster, parse_range_config_file, filter_params
+from helpers import parse_dist_config_file, generate_and_dump_distributions, update_param_file_with_dist_data
 from evals import Evaluator
 
 # TODO refactor so that this is a main short file which provides access to a backend
@@ -94,7 +94,7 @@ def create_runner_sh_script(compilation_fpath, cpp_file_fpath, alphas, multips, 
 	if init_distributions is None:
 		ninter_iterator = itertools.repeat(Ninter)
 	else:
-		ninter_iterator = [Ninter[x] for x in dist_name_iterator]
+		ninter_iterator = [Ninter[x]['size'] for x in dist_name_iterator]
 	if coefs is not None:
 		for loc in zip(alphas, multips, coefs, dist_name_iterator, ninter_iterator):
 			local_alph, local_multip, local_coefs, local_distname, local_ninter = loc
@@ -350,7 +350,8 @@ def unweighted_mse(pred, output, *args, **kwargs):
 if __name__ == '__main__':
 	# TODO allow empty storage_dir and script_filepath argument if Ninter is given
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--mode', choices=['generate', 'train', 'train_one_path', 'train_in_cluster'])
+	parser.add_argument('--mode', choices=['generate', 'train',
+	                                       'train_one_path', 'train_in_cluster', 'train_in_out'])
 
 	# only relevant for generation
 	parser.add_argument("--alpha_range", nargs=2, type=float, default=(0, 0.49))
@@ -388,9 +389,11 @@ if __name__ == '__main__':
 	parser.add_argument("--loss", type=str, choices=['mse', 'time_weighting'], default='mse')
 	parser.add_argument("--weight_decay", default=0.0, type=float)
 	parser.add_argument("--no_epochs", type=int, default=10)
+	parser.add_argument("--training_range_config_file", type=str)
 
 	# data parameters
 	parser.add_argument("--storage_dir", default="storage")
+	parser.add_argument("--dist_dir", type=str)
 	parser.add_argument("--seed_cluster_path_idx", type=int)
 	parser.add_argument("--figure_dir", type=str)
 	parser.add_argument("--sample_k_paths_train", type=int)
@@ -510,8 +513,22 @@ if __name__ == '__main__':
 			input_size = train_dataset.input_size
 
 		elif args.mode == 'train_in_out':
-			pass
+			if args.training_range_config_dile is None:
+				raise ValueError("if mode = train_in_out, then you need to pass config file to training_range_config_dile")
 
+			if args.different_dists:
+				if args.dist_dir is None:
+					raise ValueError("if different_dists is True, then you need to pass dist_dir")
+				dist_fpath = os.path.join(args.dist_dir, "distribution_logfile.txt")
+				params = update_param_file_with_dist_data(params, dist_fpath)
+
+			range_params = parse_range_config_file(args.training_range_config_file)
+			params_in, params_part_int, params_tot_out = filter_params(params, range_params)
+
+			dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, params_in,
+			                                                                         Ninter=args.Ninter, stop_at_k=stop_at_k)
+			validation_prototype, val_time_indices = build_whole_dataset_parametrised(xgrid, params_tot_out,
+			                                                                          Ninter=args.Ninter, stop_at_k=stop_at_k)
 		elif args.mode == 'train_one_path':
 			trunc_params = {}
 			for key, items in params.items():
@@ -527,7 +544,7 @@ if __name__ == '__main__':
 			                                    storage_filelist=os.listdir(args.storage_dir))
 			M = train_time_indices.shape[0]
 		else:
-			raise NotImplementedError
+			raise ValueError("incorrect mode argument")
 
 		if validation_prototype is None and validation_path is not None:
 			validation_params = path_to_params(validation_path, return_dict=True, return_as_list=True)
