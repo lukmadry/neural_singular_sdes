@@ -4,6 +4,8 @@ import json
 import h5py
 
 from collections import Counter
+
+from numpy.polynomial import polynomial
 from scipy.integrate import trapezoid
 from scipy.stats import norm, uniform
 
@@ -31,8 +33,8 @@ def build_progress_bar(i, M, length=50, p_sign='@'):
 	s = "[" + p_sign * prop + '_' * (length - prop) + "]" + f" {100*float(i/M):.2f}%"
 	return s
 
-def update_json(filename, json_dict):
-	if os.path.isfile(filename):
+def update_json(filename, json_dict, replace_old_json=False):
+	if os.path.isfile(filename) and not replace_old_json:
 		with open(filename, "r") as f:
 			new_json = json.load(f)
 		keys = set(json_dict.keys()) & set(new_json.keys())
@@ -43,17 +45,23 @@ def update_json(filename, json_dict):
 
 		with open(filename, "w") as f:
 			json.dump(new_json, f)
-	else:
+	elif not os.path.isfile(filename) or replace_old_json:
 		with open(filename, "w") as f:
 			json.dump(json_dict, f)
+	else:
+		raise ValueError
 
 
 def function_factory(power, multiplier, taylor_coefs, eps):
-	def fn(x):
-		polynomial = 0
-		for j, t in enumerate(taylor_coefs):
-			polynomial += np.power(x, j+1) * t
-		return np.sign(x) * multiplier/(eps + np.power(np.abs(x), power)) * (1 + np.maximum(-1, np.minimum(polynomial, 1)))
+	if taylor_coefs is not None:
+		def fn(x):
+			polynomial = 0
+			for j, t in enumerate(taylor_coefs):
+				polynomial += np.power(x, j+1) * t
+			return np.sign(x) * multiplier/(eps + np.power(np.abs(x), power)) * (1 + np.maximum(-1, np.minimum(polynomial, 1)))
+	else:
+		def fn(x):
+			return np.sign(x) * multiplier/(eps + np.power(np.abs(x), power))
 	return fn
 
 # we ignore coefs
@@ -147,7 +155,7 @@ def update_param_file_with_dist_data(params, distribution_logfile_path):
 	loc_arr = []
 	scale_arr = []
 	for fname in params['storage_names']:
-		distname_clear = "mixture_" + fname.split("_")[-1].split(".")
+		distname_clear = "mixture_" + fname.split("_")[-1].split(".")[0] # this works in a very specific conditions and is not very robust
 		loc_arr.append(mixt_dict[distname_clear])
 		scale_arr.append(mixt_dict[distname_clear])
 	params['loc'] = loc_arr
@@ -162,6 +170,7 @@ def filter_params(params, param_ranges):
 
 	keys = list(param_ranges.keys())
 	all_keys = list(params.keys())
+	keys = [key for key in keys if key in all_keys]
 	K = len(keys)
 	N = len(params[keys[0]])
 	for i in range(N):
@@ -185,7 +194,10 @@ def filter_params(params, param_ranges):
 	for idx_list, output_dict in zip([params_indices_in, params_indices_partially_out, params_indices_tot_out],
 	                                 [params_in, params_part_out, params_tot_out]):
 		for key in keys_params:
-			output_dict[key] = [params[key][i] for i in idx_list]
+			if params[key] is not None:
+				output_dict[key] = [params[key][i] for i in idx_list]
+			else:
+				output_dict[key] = None
 
 	return params_in, params_part_out, params_tot_out
 
@@ -381,16 +393,16 @@ def parse_range_config_file(filepath):
 	scales_range = []
 
 	for line in config:
-		param, lower, upper = line.strip("\n").split("|")
+		param, lower, upper = line.strip("\n").split()
 		lower = float(lower)
 		upper = float(upper)
 		if param.upper() == "ALPHA":
 			alphas_range = [lower, upper]
-		elif param.upper() == "MULTIPLIER":
+		elif param.upper() == "MULTIPLE":
 			multips_range = [lower, upper]
 		elif param.upper() == "MEAN":
 			means_range = [lower, upper]
 		elif param.upper() == "SCALE":
 			scales_range = [lower, upper]
 
-	return {"alphas": alphas_range, "multips": multips_range, "means": means_range, "scales": scales_range}
+	return {"alphas": alphas_range, "multipliers": multips_range, "means": means_range, "scales": scales_range}

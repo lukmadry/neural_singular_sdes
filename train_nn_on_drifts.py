@@ -20,6 +20,7 @@ from evals import Evaluator
 
 # TODO refactor so that this is a main short file which provides access to a backend
 # TODO add CI/CD run using this loop
+# TODO fix initial distribution loading
 
 # think about how to best parametrise distributions
 # in the directory you should have some parameters of the distribution. Let us maybe first try moving gaussian
@@ -54,10 +55,10 @@ def sample_interaction_parameters(N, alph_range, multip_range, coefs_range=None,
 	return alphas, multips, coefs, dist_files
 
 
-
 def create_runner_sh_script(compilation_fpath, cpp_file_fpath, alphas, multips, coefs=None,
                             return_storage_fnames=True, add_compilation=True, Ninter=None,
-                            compilation_template=None, storage_dir="storage", init_distributions=None):
+                            compilation_template=None, storage_dir="storage", init_distributions=None,
+                            add_verification_script=True):
 	"""
 
 	:param compilation_fpath:
@@ -95,6 +96,15 @@ def create_runner_sh_script(compilation_fpath, cpp_file_fpath, alphas, multips, 
 		ninter_iterator = itertools.repeat(Ninter)
 	else:
 		ninter_iterator = [Ninter[x]['size'] for x in dist_name_iterator]
+	if add_verification_script and init_distributions is not None:
+		s = f"{compilation_fpath} --a 0.35 --m 1 --distname test_init.hdf5 --f verification_run.hdf5 --max_iter 1000"
+		s += "\npython3 verify_starting_dists.py --dist test_init.hdf5 --run verification_run.hdf5 --N 150 --info_txt passing_info.txt\n"
+		s += f'if grep -q "FAIL" "passing_info.txt"; then echo "FAILED TO PROPERLY LOAD A DISTRIBUTION" exit 1; fi'
+		s += "\n"
+		s += "rm passing_info.txt verification_run.hdf5"
+		s += "\n"
+		big_script += s
+
 	if coefs is not None:
 		for loc in zip(alphas, multips, coefs, dist_name_iterator, ninter_iterator):
 			local_alph, local_multip, local_coefs, local_distname, local_ninter = loc
@@ -147,7 +157,7 @@ def build_part_of_dataset(xgrid, positions_arr,
 
 def build_part_of_dataset_parametrised(xgrid, fn_parameters,
                                        time_indices, positions_arr,
-                                       ):
+                                       with_init_dist=False, bins_for_init_dist = 30):
 	"""
 
 	:param xgrid:
@@ -159,14 +169,22 @@ def build_part_of_dataset_parametrised(xgrid, fn_parameters,
 	"""
 	fn = function_factory(*fn_parameters)
 	total_x = []
+	if with_init_dist: # could be optimised by precomputing the edges, but the most expensive part of the computation is generating McK so
+		# maybe we can just listen to Donald Knuth
+		bins_edges = np.linspace(-3, 3, num=bins_for_init_dist)
+		prop, _ = np.histogram(positions_arr[0, :], bins=bins_edges, density=True) # 0 index is initial distribution
+		prop /= prop.sum() # normalise
+	else:
+		prop = positions_arr[0, :]
 	for i, ti in enumerate(time_indices[1:], 1):
 		vals = compute_drift_vec(xgrid, positions_arr[i, :], fn)
-		total_x.append((fn_parameters, ti, vals, positions_arr[0, :]))
+		total_x.append((fn_parameters, ti, vals, prop))
 
 	return total_x
 
 def build_whole_dataset_parametrised(xgrid, params_dict,
-                                     Ninter=150, stop_at_k=np.inf, return_rarified_pos_arr=False):
+                                     Ninter=150, stop_at_k=np.inf, return_rarified_pos_arr=False,
+                                     with_init_dist=False):
 	"""
 
 	:param xgrid:
@@ -191,7 +209,9 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
 	print("Progress at loading storage: ")
 	pos_arrays = []
 
-	for nb, (a, m, c, storage_fname) in enumerate(zip(alphas, multips, coefs, data)):
+	coefs_iterator = coefs if coefs is not None else itertools.repeat(None)
+
+	for nb, (a, m, c, storage_fname) in enumerate(zip(alphas, multips, coefs_iterator, data)):
 		# we will first check if Ninter matches the file
 
 		if storage_fname.startswith("--f"):
@@ -207,7 +227,8 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
 
 		positions_arr = positions_arr.reshape(-1, Ninter).astype(np.float32)
 		part_dataset = build_part_of_dataset_parametrised(xgrid, (a, m, c, eps),
-		                                                  time_indices, positions_arr)
+		                                                  time_indices, positions_arr,
+		                                                  with_init_dist=with_init_dist)
 		all_datasets.extend(part_dataset)
 		if return_rarified_pos_arr:
 			pos_arrays.append(positions_arr) # no need to do anything, they are already rarified in c++
@@ -243,7 +264,8 @@ def split_param_dict_train_val(param_dict,
 
 # TODO we may need to do some lazy loading
 class DatasetParametrised(Dataset):
-	def __init__(self, xgrid, all_datasets, max_polynomial_degree=5, with_histogram=False):
+	def __init__(self, xgrid, all_datasets, max_polynomial_degree=5,
+	             with_histogram=False, bins=30):
 		"""
 
 		:param xgrid:
@@ -251,8 +273,6 @@ class DatasetParametrised(Dataset):
 		    (parameters of a function, time, values of a function at fgrid)
 
 		"""
-		if with_histogram:
-			raise NotImplementedError
 
 		self.xgrid = xgrid
 		self.all_datasets = all_datasets
@@ -267,19 +287,25 @@ class DatasetParametrised(Dataset):
 		self.k = len(self.all_datasets)
 		self.no_param = 2 + max_polynomial_degree # a, multiplier and polynomial coefficients
 		self.input_size = self.no_param + 2 # functions parameters time and space
+
 		# TODO I think you should also include the initial distribution, i.e. its histogram
+		if with_histogram:
+			self.input_size += bins
+			self.bins = bins
 
 
 	def __getitem__(self, index):
 		nr_dataset = index // self.length_of_one_fdataset
 		nr_point = index % self.length_of_one_fdataset
-		u = np.zeros(self.no_param + 2, dtype=np.float32) # plus time and space argument
+		u = np.zeros(self.input_size, dtype=np.float32) # plus time and space argument
 		u[0] = self.all_datasets[nr_dataset][0][0] # alpha parameter
 		u[1] = self.all_datasets[nr_dataset][0][1] # multiplier
 		taylor = self.all_datasets[nr_dataset][0][2]
 		u[2:2+len(taylor)] = taylor
 		u[self.no_param] = self.all_datasets[nr_dataset][1] # time
 		u[self.no_param+1] = self.xgrid[nr_point] # x
+		if self.bins is not None: # it's not so great to have branching every time, maybe we can do a mixin instead
+			u[self.no_param+2:self.no_param+2+self.bins] = self.all_datasets[nr_dataset][3]
 		return u, self.all_datasets[nr_dataset][2][nr_point] #( (fn_params, time, x), y)
 
 	def __len__(self):
@@ -375,6 +401,8 @@ if __name__ == '__main__':
 	                    default="cpp_simul/sde_mkl_fin")
 	parser.add_argument("--cpp_file_fpath",
 	                    default="cpp_simul/ips_sim_gemini_ubuntu.cpp")
+	parser.add_argument("--overwrite_json", action=argparse.BooleanOptionalAction, default=False)
+	parser.add_argument("--add_verification_script", action=argparse.BooleanOptionalAction, default=True)
 
 	parser.add_argument("--lower_bd", type=float, default=-5)
 	parser.add_argument("--upper_bd", type=float, default=5)
@@ -390,9 +418,10 @@ if __name__ == '__main__':
 	parser.add_argument("--weight_decay", default=0.0, type=float)
 	parser.add_argument("--no_epochs", type=int, default=10)
 	parser.add_argument("--training_range_config_file", type=str)
+	parser.add_argument("--different_dists", action=argparse.BooleanOptionalAction, default=False)
 
 	# data parameters
-	parser.add_argument("--storage_dir", default="storage")
+	parser.add_argument("--storage_dir")
 	parser.add_argument("--dist_dir", type=str)
 	parser.add_argument("--seed_cluster_path_idx", type=int)
 	parser.add_argument("--figure_dir", type=str)
@@ -447,12 +476,14 @@ if __name__ == '__main__':
 		                                                compilation_template=args.compilation_template_fpath,
 		                                                storage_dir=args.storage_dir,
 		                                                init_distributions=distnames, Ninter=n_inter,
+		                                                add_verification_script=args.add_verification_script,
 		                                                )
 		with open(args.script_filepath, "w") as f:
 			f.write(script)
 
 		update_json(params_to_save_path, {"alphas": alphas, "multipliers": multips,
-		                                  "coefs": coefs, "storage_names": storage_names})
+		                                  "coefs": coefs, "storage_names": storage_names},
+		            replace_old_json=args.overwrite_json)
 
 		makedirs(args.storage_dir, exist_ok=True)
 
@@ -492,6 +523,9 @@ if __name__ == '__main__':
 			validation_prototype = val_dataset_prototype[:M]
 
 		elif args.mode == 'train_in_cluster':
+			if args.different_dists:
+				raise NotImplementedError("training on varying distributions not supported for clusters")
+
 			if args.seed_cluster_path_idx is None:
 				idx = np.random.randint(len(params['storage_names']))
 			else:
@@ -513,7 +547,7 @@ if __name__ == '__main__':
 			input_size = train_dataset.input_size
 
 		elif args.mode == 'train_in_out':
-			if args.training_range_config_dile is None:
+			if args.training_range_config_file is None:
 				raise ValueError("if mode = train_in_out, then you need to pass config file to training_range_config_dile")
 
 			if args.different_dists:
@@ -524,12 +558,19 @@ if __name__ == '__main__':
 
 			range_params = parse_range_config_file(args.training_range_config_file)
 			params_in, params_part_int, params_tot_out = filter_params(params, range_params)
-
 			dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, params_in,
-			                                                                         Ninter=args.Ninter, stop_at_k=stop_at_k)
+			                                                                         Ninter=args.Ninter,
+			                                                                         stop_at_k=stop_at_k,
+			                                                                         with_init_dist=args.different_dists)
 			validation_prototype, val_time_indices = build_whole_dataset_parametrised(xgrid, params_tot_out,
-			                                                                          Ninter=args.Ninter, stop_at_k=stop_at_k)
+			                                                                          Ninter=args.Ninter,
+			                                                                          stop_at_k=stop_at_k,
+			                                                                          with_init_dist=args.different_dists)
 		elif args.mode == 'train_one_path':
+
+			if args.different_dists:
+				raise NotImplementedError("training on varying distributions not supported for one path training")
+
 			trunc_params = {}
 			for key, items in params.items():
 				trunc_params[key] = [items[0]] # this can be randomised as well
