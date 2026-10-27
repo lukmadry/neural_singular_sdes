@@ -29,8 +29,28 @@ from evals import Evaluator
 def sample_interaction_parameters(N, alph_range, multip_range, coefs_range=None,
                                   init_dist_dir=None, with_polynomial=False, max_n_coefs=None, ret_full_paths=True):
 	"""
+	Samples parameters for an interaction function and initial distribution
 
-	TODO
+	Parameters
+	--------
+	N : int
+		number of parameters that are going to be sampled
+	alph_range : list or a tuple of size two, for range of \alpha to be sampled
+	multip_range : same as above for multiplier
+	coefs_range : same but for taylor coefficients
+	init_dist_dir : str, directory where possible initial distributions are stored. Distributions have to be in .hdf5 format
+	with_polynomial : bool, if True then the function will have polynomial factor. If False, then coefs_range will be ignored
+	max_n_coefs : maximal degree of polynomial if applicable
+	ret_full_paths : bool, if True filenames of distributions will be returned with a directory
+
+	Returns
+	-------
+	alphas, multips, coefs, dist_files
+
+	alphas : np.ndarray of size N of \alpha in specified range
+	multips : the same for multipliers
+	coefs : list of lists of size max_n_coefs if with_polynomial = True, else None
+	dist_files : list of initial distributions files sampled from init_dist_dir of size N
 	"""
 	alphas = np.random.uniform(alph_range[0], alph_range[1], N)
 	multips = np.random.uniform(multip_range[0], multip_range[1], N)
@@ -58,8 +78,9 @@ def sample_interaction_parameters(N, alph_range, multip_range, coefs_range=None,
 def create_runner_sh_script(compilation_fpath, cpp_file_fpath, alphas, multips, coefs=None,
                             return_storage_fnames=True, add_compilation=True, Ninter=None,
                             compilation_template=None, storage_dir="storage", init_distributions=None,
-                            add_verification_script=True):
+                            add_verification_script=False):
 	"""
+	Create a .sh script that will generate McKean-Vlasov trajectories and store them in specified folder.
 
 	:param compilation_fpath:
 	:param cpp_file_fpath:
@@ -159,13 +180,26 @@ def build_part_of_dataset_parametrised(xgrid, fn_parameters,
                                        time_indices, positions_arr,
                                        with_init_dist=False, bins_for_init_dist = 30):
 	"""
+	Creates a part of a dataset corresponding to a fixed set of parameters. It evaluates drift parametrised with
+	fn_parameters at point x, in other words it computes
 
-	:param xgrid:
-	:param fn_parameters:
-	:param time_indices:
-	:param positions_arr:
-	:return: a list of tuples arranged as :
-	(parameters of function, time, list of values of f(x - X^j) at this time evaluated at x=xgrid, starting values of position array)
+	x -> 1/N \sum_{j=1}^N f(x - X^j_t)
+
+	for all t in time_indices
+
+	Parameters
+	--------
+	xgrid : an evenly space grid
+	fn_parameters : a tuple of paramaters (a, m, coefs, eps), where a, m are floats, coefs is a list or None,
+		eps is a very small float for numerical stability
+	time_indices : an array of time indices at which we are going to evaluate.
+	positions_arr: an array loaded from an experiment
+
+	Returns
+	------
+	(parameters of function, time, list of values of f(x - X^j) at this time evaluated at x=xgrid, prop)
+
+	where prop is either starting values or a histogram of a starting distribution
 	"""
 	fn = function_factory(*fn_parameters)
 	total_x = []
@@ -186,12 +220,17 @@ def build_whole_dataset_parametrised(xgrid, params_dict,
                                      Ninter=150, stop_at_k=np.inf, return_rarified_pos_arr=False,
                                      with_init_dist=False):
 	"""
+	Reads the files and creates a dataset that can be fed into a neural network
 
-	:param xgrid:
-	:param params_dict:
+	Parameters
+	---------
+	xgrid : an evenly space grid. The assumption that it is evenly spaced is NOT tested against
+	params_dict : a dict with keys : alphas, multipliers, coefs, storage_names
 	:param Ninter:
 	:param stop_at_k:
 
+	Returns
+	-----
 	:return: (a list of tuples arranged as in build_part_..., time_indices)
 	"""
 	alphas, multips, coefs, data = params_dict['alphas'], params_dict['multipliers'], params_dict['coefs'], params_dict['storage_names']
@@ -267,9 +306,12 @@ class DatasetParametrised(Dataset):
 	def __init__(self, xgrid, all_datasets, max_polynomial_degree=5,
 	             with_histogram=False, bins=30):
 		"""
+		Dataset that takes the
 
-		:param xgrid:
-		:param all_datasets: a list of tuples in the format
+		Parameters
+		-------
+		xgrid , np.ndarray of evenly spaced grid
+		all_datasets: a list of tuples in the format
 		    (parameters of a function, time, values of a function at fgrid)
 
 		"""
@@ -288,11 +330,9 @@ class DatasetParametrised(Dataset):
 		self.no_param = 2 + max_polynomial_degree # a, multiplier and polynomial coefficients
 		self.input_size = self.no_param + 2 # functions parameters time and space
 
-		# TODO I think you should also include the initial distribution, i.e. its histogram
 		if with_histogram:
 			self.input_size += bins
 			self.bins = bins
-
 
 	def __getitem__(self, index):
 		nr_dataset = index // self.length_of_one_fdataset
@@ -310,6 +350,21 @@ class DatasetParametrised(Dataset):
 
 	def __len__(self):
 		return self.k * self.length_of_one_fdataset
+
+class DatasetParametrisedHistogramNoPolynomial(DatasetParametrised):
+	def __init__(self, xgrid, all_datasets, bins=30):
+		super().__init__(xgrid, all_datasets, max_polynomial_degree=0, with_histogram=True, bins=bins)
+
+	def __getitem__(self, index):
+		nr_dataset = index // self.length_of_one_fdataset
+		nr_point = index % self.length_of_one_fdataset
+		u = np.zeros(self.input_size, dtype=np.float32)  # plus time and space argument
+		u[0] = self.all_datasets[nr_dataset][0][0]  # alpha parameter
+		u[1] = self.all_datasets[nr_dataset][0][1]  # multiplier
+		u[self.no_param] = self.all_datasets[nr_dataset][1]  # time
+		u[self.no_param + 1] = self.xgrid[nr_point]  # x
+		u[self.no_param + 2:self.no_param + 2 + self.bins-1] = self.all_datasets[nr_dataset][3]
+		return u, self.all_datasets[nr_dataset][2][nr_point]  # ( (fn_params, time, x), y)
 
 # TODO add parallel training on multiple cores
 def train_loop(loader, net, opt,
@@ -558,14 +613,25 @@ if __name__ == '__main__':
 
 			range_params = parse_range_config_file(args.training_range_config_file)
 			params_in, params_part_int, params_tot_out = filter_params(params, range_params)
-			dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, params_in,
+			train_dataset_prototype, train_time_indices = build_whole_dataset_parametrised(xgrid, params_in,
 			                                                                         Ninter=args.Ninter,
 			                                                                         stop_at_k=stop_at_k,
 			                                                                         with_init_dist=args.different_dists)
+
+			M = train_time_indices.shape[0]
 			validation_prototype, val_time_indices = build_whole_dataset_parametrised(xgrid, params_tot_out,
 			                                                                          Ninter=args.Ninter,
 			                                                                          stop_at_k=stop_at_k,
 			                                                                          with_init_dist=args.different_dists)
+
+			if args.different_dists:
+				train_dataset = DatasetParametrisedHistogramNoPolynomial(xgrid, train_dataset_prototype)
+				val_dataset = DatasetParametrisedHistogramNoPolynomial(xgrid, validation_prototype)
+			else:
+				train_dataset = DatasetParametrised(xgrid, train_dataset_prototype, with_histogram=False)
+				val_dataset = DatasetParametrised(xgrid, validation_prototype, with_histogram=False)
+			input_size = train_dataset.input_size
+			dataset_prototype = train_dataset_prototype[:M]
 		elif args.mode == 'train_one_path':
 
 			if args.different_dists:
@@ -605,7 +671,7 @@ if __name__ == '__main__':
 		                       hidden_layers=args.hidden_layers,
 		                       learning_rate=args.learning_rate,
 		                       weight_decay=args.weight_decay)
-
+		print("Created model")
 		if args.loss == 'mse':
 			loss_fn = unweighted_mse
 		else:

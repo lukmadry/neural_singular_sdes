@@ -1,3 +1,5 @@
+from os import posix_spawn
+
 import numpy as np
 import os
 import json
@@ -204,17 +206,37 @@ def filter_params(params, param_ranges):
 # this is just a convenience structure for input data, not a Dataset in a PyTorch sense which needs to provide outputs as well
 class OneFunctionOnAGrid:
 	def __init__(self, xgrid, alpha, multip, coefs, eps, times=None,
-	             max_degree=5, with_histogram=False, position_arr=None):
+	             max_degree=5, with_histogram=False, histogram=None, position_arr=None, bins=30):
 		self.xgrid = xgrid
 		self.alpha = alpha
 		self.multip = multip
 		self.times = times
 		self.coefs = np.zeros(max_degree)
-		self.max_degree = max_degree
-		self.coefs[:len(coefs)] = coefs
-		self.no_param = 2 + max_degree
+		if coefs is not None:
+			self.coefs[:len(coefs)] = coefs
+			self.max_degree = max_degree
+		else:
+			self.coefs = None
+			self.max_degree = 0
+		self.no_param = 2 + self.max_degree
 		self.input_size = self.no_param + 2
 		self.fn = function_factory(alpha, multip, coefs, eps)
+		self.bins_cnt = bins.shape[0] if isinstance(bins, np.ndarray) else bins
+		self.bins = np.linspace(-3, 3, num=self.bins_cnt)
+		self.input_size += self.bins_cnt
+
+		if position_arr is not None:
+			self._input_pos_arr(position_arr)
+
+		if with_histogram and histogram is None:
+			raise ValueError("if with_histogram is True, then you need to pass a position_array")
+		elif with_histogram and histogram is not None:
+			self.hist = histogram # because in this case we will just pass the histogram
+
+		if with_histogram:
+			self.create_input_with_time = self._create_input_with_time_hist
+		else:
+			self.create_input_with_time = self._create_input_with_time_no_hist
 
 		if times is not None:
 			self.inputs = np.zeros((len(times) * len(xgrid), self.input_size))
@@ -222,16 +244,22 @@ class OneFunctionOnAGrid:
 				arr = self.create_input_with_time(t)
 				self.inputs[i * len(xgrid):(i + 1) * len(xgrid)] = arr
 
-		if position_arr is not None:
-			self._input_pos_arr(position_arr)
-
-	def create_input_with_time(self, time):
+	def _create_input_with_time_no_hist(self, time):
 		arr = np.zeros((self.xgrid.shape[0], self.input_size))
 		arr[:, 0] = self.alpha
 		arr[:, 1] = self.multip
 		arr[:, 2:2 + self.max_degree] = self.coefs.reshape(1, -1)
 		arr[:, self.no_param] = time
 		arr[:, self.no_param + 1] = self.xgrid
+		return arr
+
+	def _create_input_with_time_hist(self, time):
+		arr = np.zeros((self.xgrid.shape[0], self.input_size))
+		arr[:, 0] = self.alpha
+		arr[:, 1] = self.multip
+		arr[:, 2] = time
+		arr[:, 3] = self.xgrid
+		arr[:, 4:4+self.bins_cnt-1] = self.hist
 		return arr
 
 	def create_input_with_time_and_pos(self, time, pos):

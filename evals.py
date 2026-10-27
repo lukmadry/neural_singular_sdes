@@ -13,7 +13,7 @@ of a network in a structured way, for every timepoint
 class Evaluator:
 	def __init__(self, network, xgrid,
 	             time_indices, dt, eps, pos_arr = None,
-	             proto_dataset = None, fn_params = None):
+	             proto_dataset = None, fn_params = None, with_histogram = True, bins = 30):
 		"""
 
 		network - accepts inputs as:
@@ -47,8 +47,14 @@ class Evaluator:
 				raise ValueError
 			self.proto_dataset = None
 
-		self.fn_caller = OneFunctionOnAGrid(xgrid, *self.fn_params)
-
+		if with_histogram:
+			if proto_dataset is None:
+				raise ValueError("if with_histogram is True then you need to pass proto_dataset")
+			self.fn_caller = OneFunctionOnAGrid(xgrid, *self.fn_params,
+			                                    with_histogram=with_histogram,
+			                                    histogram=proto_dataset[0][-1])
+		else:
+			self.fn_caller = OneFunctionOnAGrid(xgrid, *self.fn_params)
 
 	# we just pass a sequence of times, because we already hold ground truths inside
 	def _evaluate_grid_with_proto_dataset(self):
@@ -59,6 +65,7 @@ class Evaluator:
 		ts = self.dt * self.time_indices
 		x_inputs = [self.fn_caller.create_input_with_time(t) for t in ts]
 		y_inputs = [self.proto_dataset[t][2] for t in self.time_indices]
+		print(x_inputs[0].shape)
 		preds = [self.network.forward(torch.as_tensor(x, dtype=torch.float32)).detach().numpy() for x in x_inputs]
 
 		return (preds, y_inputs)
