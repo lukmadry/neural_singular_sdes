@@ -1,5 +1,3 @@
-from os import posix_spawn
-
 import numpy as np
 import os
 import json
@@ -7,7 +5,6 @@ import h5py
 
 from collections import Counter
 
-from numpy.polynomial import polynomial
 from scipy.integrate import trapezoid
 from scipy.stats import norm, uniform
 
@@ -236,8 +233,10 @@ class OneFunctionOnAGrid:
 
 		if with_histogram:
 			self.create_input_with_time = self._create_input_with_time_hist
+			self.create_input_with_time_and_pos = self._create_input_with_time_and_pos_hist
 		else:
 			self.create_input_with_time = self._create_input_with_time_no_hist
+			self.create_input_with_time_and_pos = self._create_input_with_time_and_pos_no_hist
 
 		if times is not None:
 			self.inputs = np.zeros((len(times) * len(xgrid), self.input_size))
@@ -257,6 +256,7 @@ class OneFunctionOnAGrid:
 		return arr
 
 	def _create_input_with_time_hist(self, time):
+		# we could precreate a building block
 		arr = np.zeros((self.xgrid.shape[0], self.input_size))
 		arr[:, 0] = self.alpha
 		arr[:, 1] = self.multip
@@ -265,16 +265,23 @@ class OneFunctionOnAGrid:
 		arr[:, 4:4+self.bins_cnt-1] = self.hist
 		return arr
 
-	def create_input_with_time_and_pos(self, time, pos):
-		if self.with_hist:
-			raise NotImplementedError
-
+	def _create_input_with_time_and_pos_no_hist(self, time, pos):
 		arr = np.zeros((1, self.input_size))
 		arr[:, 0] = self.alpha
 		arr[:, 1] = self.multip
 		arr[:, 2:2 + self.max_degree] = self.coefs.reshape(1, -1)
 		arr[:, self.no_param] = time
 		arr[:, self.no_param + 1] = pos
+		return arr
+
+	def _create_input_with_time_and_pos_hist(self, time, pos):
+
+		arr = np.zeros((self.xgrid.shape[0], self.input_size))
+		arr[:, 0] = self.alpha
+		arr[:, 1] = self.multip
+		arr[:, 2] = time
+		arr[:, 3] = pos
+		arr[:, 4:4+self.bins_cnt-1] = self.hist
 		return arr
 
 	def _input_pos_arr(self, pos_arr):
