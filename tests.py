@@ -7,8 +7,10 @@ import json
 
 from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params
 from train_nn_on_drifts import (build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised,
-                                sample_interaction_parameters, create_runner_sh_script)
+                                sample_interaction_parameters, create_runner_sh_script, DatasetParametrisedHistogramNoPolynomial)
 from helpers import parse_dist_config_file, generate_and_dump_distributions
+from nets import get_model
+from evals import Evaluator
 
 class TestDatasetBuilding(unittest.TestCase):
 
@@ -77,6 +79,67 @@ class TestDatasetBuilding(unittest.TestCase):
 		self.assertEqual(len(dataset), self.xgrid.shape[0] * 12)
 
 		self.assertEqual(len(dataset[0][0]), 9)
+
+
+class TestDatasetBuiltWithHist(unittest.TestCase):
+
+
+	Ninter = 150
+	storage_dir = "storage_narrow_init_dist"
+	dx = 0.01
+	xgrid = np.arange(-10, 10, dx)
+	alph = 0.2
+	multip = 1
+	coefs = [0.05, -0.05]
+	eps = 1 / np.power(Ninter, 1 - 1e-4)
+	dt = 0.1 * eps * eps  # reproducing the computation of dt in the .cpp file
+	M = int(1 / dt) + 1
+	filenames = glob(os.path.join(storage_dir, f"N_{Ninter}_*.hdf5"))
+	param_dict_fpath = f"smoke_run_N{Ninter}_params.json"
+
+
+	def test_build_part_of_dataset_and_torch(self):
+		# they are together because we use the part_outcome to create Torch dataset
+
+		fname = self.filenames[0]
+
+		print("Testing the following file: ", fname)
+		with h5py.File(fname) as f:
+			pos_arr = f['drift_results'][:]
+		pos_arr = pos_arr.reshape(-1, self.Ninter)
+
+		time_indices = np.arange(0, self.M, 1000) * self.dt
+		self.assertEqual(len(time_indices), 225)
+		fn_params = (self.alph, self.multip, None, self.eps)
+		part_outcome = build_part_of_dataset_parametrised(self.xgrid,
+						                                   fn_params,
+						                                   time_indices[:3],
+						                                   pos_arr,
+						                                    with_init_dist=True)
+
+		self.assertEqual(len(part_outcome), 2) # we pass three time_indices, but we do not count the first one
+		for j, part in enumerate(part_outcome):
+			self.assertEqual(len(part), 4)
+			self.assertEqual(part[1], time_indices[j+1]) # we do not start from zero time !
+			self.assertEqual(part[2].shape, self.xgrid.shape)
+			self.assertEqual(part[3].shape, (29,))
+
+		bins_edges = np.linspace(-3, 3, num=30)
+		h, _ = np.histogram(pos_arr[0, :], bins=bins_edges, density=True)
+		h /= h.sum()
+
+		is_close = np.allclose(h, part_outcome[0][-1])
+		self.assertTrue(is_close)
+		self.part_outcome = part_outcome
+
+		dataset = DatasetParametrisedHistogramNoPolynomial(xgrid=self.xgrid,
+		                                                   all_datasets=self.part_outcome)
+
+		self.assertEqual(dataset.input_size, 33)
+		self.assertEqual(dataset.no_param, 2)
+		u, y = dataset[0]
+		self.assertEqual(u.shape[0], 33)
+
 
 class TestTrajectoryFinder(unittest.TestCase):
 
@@ -167,6 +230,10 @@ class TestTrajectoryFinder(unittest.TestCase):
 		self.assertEqual(params_in["alphas"], [0.322, 0.324, 0.33, 0.331, 0.329, 0.34])
 
 
+class TestFilteringWithInitDist(unittest.TestCase):
+
+	pass
+
 class TestGenerationInitDist(unittest.TestCase):
 
 	dist_config_file_full_path = "tests/init_dist_moving_gaussian/config_file.txt"
@@ -251,11 +318,107 @@ class TestGenerationInitDist(unittest.TestCase):
 
 		self.assertEqual(s, target_string)
 
-class TestFiltering(unittest.TestCase):
-	pass
 
 class TestEval(unittest.TestCase):
-	pass
+
+	fn_params_nohist = (0.35, 1, (0.2, -0.3, 3, 0, 0), 1e-6)
+	fn_params_no_polynom = (0.35, 1, None, 1e-6)
+	net_nohist, _ = get_model(input_size=9, hidden_layers=[128, 128], learning_rate=1e-2)
+	net_hist, _ = get_model(input_size=4+29, hidden_layers=[128, 128], learning_rate=1e-2)
+	xgrid = np.linspace(-5, 5, num=500)
+	Ninter_nohist = 300
+	eps_nohist = 1 / np.power(Ninter_nohist, 1 - 1e-4)
+	dt_nohist = 0.1 * eps_nohist * eps_nohist
+	nsteps_nohist = int(1/dt_nohist) + 1
+
+	Ninter_hist = 150
+	eps_hist = 1 / np.power(Ninter_hist, 1 - 1e-4)
+	dt_hist = 0.1 * eps_hist * eps_hist
+	nsteps_hist = int(1/dt_hist) + 1
+
+	storage_dir_no_hists = "storage_300_small_range"
+	storage_dir_hists = "storage_narrow_init_dist"
+
+	def test_eval_nohist(self):
+
+		trajectories = glob(os.path.join(self.storage_dir_no_hists, "*.hdf5"))
+
+		with h5py.File(trajectories[0], "r") as f:
+			pos_arr = f['drift_results'][:]
+
+		pos_arr = pos_arr.reshape(-1, self.Ninter_nohist)
+		time_skeleton = np.arange(0, self.nsteps_nohist, 1000)
+		time_indices = time_skeleton * self.dt_nohist
+
+		M = pos_arr.shape[0]
+		tidx = np.linspace(0, M-2, num=9)
+		with self.assertRaises(TypeError): # no fn_params for evaluator
+			evaluator = Evaluator(network=self.net_nohist, xgrid=self.xgrid,
+			                      time_indices=tidx, dt=self.dt_nohist, eps=self.eps_nohist, pos_arr=pos_arr,
+			                      with_histogram=False)
+
+
+		evaluator = Evaluator(network=self.net_nohist, xgrid=self.xgrid,
+		                      time_indices=tidx, dt=self.dt_nohist, eps=self.eps_nohist, pos_arr=pos_arr,
+		                      with_histogram=False, fn_params=self.fn_params_nohist)
+		# we don't care if these are not real parameters for this array
+		self.assertIsNotNone(evaluator.fn_caller.coefs)
+
+		with self.assertRaises(TypeError):
+			evaluator._evaluate_grid_with_proto_dataset() # you need protodataset to have ground truths
+
+		total_x = build_part_of_dataset_parametrised(self.xgrid, self.fn_params_nohist,
+		                                             time_indices=time_indices, positions_arr=pos_arr)
+		self.assertEqual(len(total_x), 898) # -1 because we start from index 1
+		evaluator_proto = Evaluator(network=self.net_nohist, xgrid=self.xgrid,
+		                      time_indices=tidx, dt=self.dt_nohist, eps=self.eps_nohist, proto_dataset=total_x,
+		                      with_histogram=False, fn_params=self.fn_params_nohist)
+
+		self.assertEqual(evaluator_proto.fn_caller.input_size, 9)
+		xinput_test = evaluator_proto.fn_caller.create_input_with_time(0.001)
+		self.assertEqual(xinput_test.shape, (500, 9))
+
+		preds, y_inputs = evaluator_proto._evaluate_grid_with_proto_dataset()
+		self.assertEqual(len(preds), 9) # this is only for presentation
+		with self.assertRaises(ValueError): # sentinel activated
+			Evaluator(network=self.net_nohist, xgrid=self.xgrid,
+		                      time_indices=tidx, dt=self.dt_nohist, eps=self.eps_nohist, proto_dataset=total_x,
+		                      with_histogram=False, fn_params=self.fn_params_nohist, pos_arr=pos_arr)
+
+		real_params = total_x[0][0]
+		self.assertEqual(evaluator_proto.fn_params, real_params) # fn_params_nohist got overridden
+
+
+	def test_eval_creation_hist(self):
+
+		trajectories = glob(os.path.join(self.storage_dir_hists, "*.hdf5"))
+
+		with h5py.File(trajectories[0], "r") as f:
+			pos_arr = f['drift_results'][:]
+
+		pos_arr = pos_arr.reshape(-1, self.Ninter_hist)
+		time_skeleton = np.arange(0, self.nsteps_hist, 1000)
+		time_indices = time_skeleton * self.dt_hist
+
+		total_x = build_part_of_dataset_parametrised(self.xgrid, self.fn_params_no_polynom,
+		                                             time_indices=time_indices, positions_arr=pos_arr,
+		                                             with_init_dist=True)
+
+		self.assertEqual(len(total_x), 224)
+		evaluator_proto = Evaluator(network=self.net_hist, xgrid=self.xgrid, time_indices=time_indices,
+		                            dt=self.dt_hist, with_histogram=True, proto_dataset=total_x, eps=self.eps_hist)
+		self.assertIsNone(evaluator_proto.fn_caller.coefs)
+		self.assertEqual(evaluator_proto.fn_caller.input_size, 33)
+		preds, y_inputs = evaluator_proto._evaluate_grid_with_proto_dataset()
+		self.assertEqual(len(preds), 225) # the same as time_indices
+
+		bins_edges = np.linspace(-3, 3, num=30)
+		h = np.histogram(pos_arr[0, :], bins=bins_edges, density=True)[0]
+		h /= h.sum()
+		if_close = np.allclose(evaluator_proto.fn_caller.hist, h)
+		self.assertTrue(if_close)
+
+
 
 if __name__ == '__main__':
 	unittest.main()

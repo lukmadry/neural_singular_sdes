@@ -43,8 +43,9 @@ class Evaluator:
 			self.proto_dataset = proto_dataset
 			self.fn_params = self.proto_dataset[0][0]
 		else:
-			if fn_params is not None:
-				raise ValueError
+			if fn_params is None:
+				raise TypeError("if you passed pos_arr then you need to pass fn_params because Evaluator cannot "
+				                "find them in pos_arr. It can find them in proto_dataset")
 			self.proto_dataset = None
 
 		if with_histogram:
@@ -62,10 +63,10 @@ class Evaluator:
 
 		:return:
 		"""
+
 		ts = self.dt * self.time_indices
 		x_inputs = [self.fn_caller.create_input_with_time(t) for t in ts]
 		y_inputs = [self.proto_dataset[t][2] for t in self.time_indices]
-		print(x_inputs[0].shape)
 		preds = [self.network.forward(torch.as_tensor(x, dtype=torch.float32)).detach().numpy() for x in x_inputs]
 
 		return (preds, y_inputs)

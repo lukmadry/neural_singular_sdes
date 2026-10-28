@@ -223,7 +223,8 @@ class OneFunctionOnAGrid:
 		self.fn = function_factory(alpha, multip, coefs, eps)
 		self.bins_cnt = bins.shape[0] if isinstance(bins, np.ndarray) else bins
 		self.bins = np.linspace(-3, 3, num=self.bins_cnt)
-		self.input_size += self.bins_cnt
+		if with_histogram:
+			self.input_size += self.bins_cnt-1
 
 		if position_arr is not None:
 			self._input_pos_arr(position_arr)
@@ -244,6 +245,8 @@ class OneFunctionOnAGrid:
 				arr = self.create_input_with_time(t)
 				self.inputs[i * len(xgrid):(i + 1) * len(xgrid)] = arr
 
+		self.with_hist = with_histogram
+
 	def _create_input_with_time_no_hist(self, time):
 		arr = np.zeros((self.xgrid.shape[0], self.input_size))
 		arr[:, 0] = self.alpha
@@ -263,6 +266,9 @@ class OneFunctionOnAGrid:
 		return arr
 
 	def create_input_with_time_and_pos(self, time, pos):
+		if self.with_hist:
+			raise NotImplementedError
+
 		arr = np.zeros((1, self.input_size))
 		arr[:, 0] = self.alpha
 		arr[:, 1] = self.multip
