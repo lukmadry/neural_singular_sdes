@@ -158,8 +158,8 @@ def update_param_file_with_dist_data(params, distribution_logfile_path):
 	scale_arr = []
 	for fname in params['storage_names']:
 		distname_clear = "mixture_" + fname.split("_")[-1].split(".")[0] # this works in a very specific conditions and is not very robust
-		loc_arr.append(mixt_dict[distname_clear])
-		scale_arr.append(mixt_dict[distname_clear])
+		loc_arr.append(mixt_dict[distname_clear]['loc'])
+		scale_arr.append(mixt_dict[distname_clear]['scale'])
 	params['loc'] = loc_arr
 	params['scale'] = scale_arr
 	return params
@@ -425,18 +425,19 @@ def parse_range_config_file(filepath):
 	multips_range = []
 	means_range = []
 	scales_range = []
+	final_dict = {}
 
 	for line in config:
 		param, lower, upper = line.strip("\n").split()
 		lower = float(lower)
 		upper = float(upper)
 		if param.upper() == "ALPHA":
-			alphas_range = [lower, upper]
+			final_dict["alphas"] = [lower, upper]
 		elif param.upper() == "MULTIPLE":
-			multips_range = [lower, upper]
+			final_dict["multipliers"] = [lower, upper]
 		elif param.upper() == "MEAN":
-			means_range = [lower, upper]
+			final_dict["loc"] = [lower, upper]
 		elif param.upper() == "SCALE":
-			scales_range = [lower, upper]
+			final_dict["scale"] = [lower, upper]
 
-	return {"alphas": alphas_range, "multipliers": multips_range, "means": means_range, "scales": scales_range}
+	return final_dict

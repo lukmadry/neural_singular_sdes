@@ -5,7 +5,9 @@ import numpy as np
 import h5py
 import json
 
-from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params
+from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params, \
+	parse_range_config_file
+from helpers import update_param_file_with_dist_data
 from train_nn_on_drifts import (build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised,
                                 sample_interaction_parameters, create_runner_sh_script, DatasetParametrisedHistogramNoPolynomial)
 from helpers import parse_dist_config_file, generate_and_dump_distributions
@@ -171,6 +173,19 @@ class TestTrajectoryFinder(unittest.TestCase):
 
 	params_ranges = {"alphas": [0.32, 0.3401], "mults": [1.019, 1.099]} # 6 alphas in, 7 for mults, 6 common for both, 4 totally out
 
+	storage_list_with_id = ['N_200_alph_0.25_mult_1_init_dist_mixture_0.hdf5',
+			                'N_200_alph_0.30_mult_1_init_dist_mixture_1.hdf5',
+			                'N_200_alph_0.35_mult_1.25_init_dist_mixture_2.hdf5',
+			                'N_200_alph_0.4_mult_1.25_init_dist_mixture_2.hdf5',
+			                'N_200_alph_0.32_mult_1.25_init_dist_mixture_3.hdf5',
+			                ]
+
+	# multipliers is correct, see build_whole...
+	params_list = {"alphas": [0.25, 0.3, 0.35, 0.4, 0.32], "multipliers": [1, 1, 1.25, 1.25, 1.25],
+	               "storage_names": storage_list_with_id}
+
+	test_config_filepath = "tests/configs/in_out.txt"
+
 	def test_onepath_closest_finder(self):
 
 		cpath_sec = find_closest_path(self.fn_params_for_sec, self.storage_list)
@@ -229,10 +244,31 @@ class TestTrajectoryFinder(unittest.TestCase):
 
 		self.assertEqual(params_in["alphas"], [0.322, 0.324, 0.33, 0.331, 0.329, 0.34])
 
+	def test_reading_dist_data(self):
 
-class TestFilteringWithInitDist(unittest.TestCase):
+		param_upd = update_param_file_with_dist_data(self.params_list, "tests/init_dist_moving_gaussian/distribution_logfile.txt")
+		self.assertTrue(all([key in param_upd for key in ["alphas", "multipliers", "storage_names", "loc", "scale"]]))
+		self.assertEqual(len(param_upd["alphas"]), 5)
+		self.assertEqual(len(param_upd["multipliers"]), 5)
 
-	pass
+		self.assertTrue("loc" in param_upd)
+		self.assertTrue("scale" in param_upd)
+
+		self.assertEqual(param_upd["loc"], [-1.0, -0.5, 0.0, 0.0, 0.5])
+		self.assertEqual(param_upd["scale"], [0.25, 0.25, 0.25, 0.25, 0.25])
+
+	def test_filtering_dist_data(self):
+		param_upd = update_param_file_with_dist_data(self.params_list, "tests/init_dist_moving_gaussian/distribution_logfile.txt")
+		range_params = parse_range_config_file(self.test_config_filepath)
+		self.assertEqual(range_params["alphas"], [0.29, 0.37])
+		self.assertEqual(range_params["loc"], [-0.75, 0.25])
+
+		self.assertEqual(len(range_params), 2) # number of keys
+
+		params_in, _, params_tout = filter_params(param_upd, range_params)
+		self.assertEqual(params_in["alphas"], [0.3, 0.35])
+		self.assertEqual(params_in["multipliers"], [1, 1.25])
+		self.assertEqual(params_in["loc"], [-0.5, 0.0])
 
 class TestGenerationInitDist(unittest.TestCase):
 
