@@ -162,7 +162,7 @@ def update_param_file_with_dist_data(params, distribution_logfile_path):
 	return params
 
 # TODO test it
-def filter_params(params, param_ranges):
+def filter_params(params, param_ranges, return_indices=True):
 	params_indices_in = []
 	params_indices_partially_out = []
 	params_indices_tot_out = []
@@ -198,12 +198,31 @@ def filter_params(params, param_ranges):
 			else:
 				output_dict[key] = None
 
+	if return_indices:
+		return params_in, params_part_out, params_tot_out, params_indices_in, params_indices_partially_out, params_indices_tot_out
 	return params_in, params_part_out, params_tot_out
 
 # this is just a convenience structure for input data, not a Dataset in a PyTorch sense which needs to provide outputs as well
 class OneFunctionOnAGrid:
 	def __init__(self, xgrid, alpha, multip, coefs, eps, times=None,
 	             max_degree=5, with_histogram=False, histogram=None, position_arr=None, bins=30):
+		"""
+		Class holding data on a drift function and array of positions
+
+		:param xgrid: np.ndarray, evenly spaced grid
+		:param alpha: float, single value, not checked
+		:param multip: float, single value, not checked
+		:param coefs: iterable of floats
+		:param eps: float, single value, not checked
+		:param times:
+		:param max_degree:
+		:param with_histogram: bool, if True then the input contains histogram of an initial distribution
+		:param histogram: np.ndarray, histogram from the previous parameter
+		:param position_arr: np.ndarray, array of positions of particles.
+		:param bins: either array of bin edges or a number of bins for histogram. Only relevant if histogram not passed
+
+		# TODO compute histogram from position_arr
+		"""
 		self.xgrid = xgrid
 		self.alpha = alpha
 		self.multip = multip
@@ -227,7 +246,7 @@ class OneFunctionOnAGrid:
 			self._input_pos_arr(position_arr)
 
 		if with_histogram and histogram is None:
-			raise ValueError("if with_histogram is True, then you need to pass a position_array")
+			raise ValueError("if with_histogram is True, then you need to pass a histogram")
 		elif with_histogram and histogram is not None:
 			self.hist = histogram # because in this case we will just pass the histogram
 

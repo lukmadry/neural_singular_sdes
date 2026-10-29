@@ -5,15 +5,15 @@ import numpy as np
 import h5py
 import json
 
-from helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params, \
+from src.helpers import find_closest_path, find_closest_path_cluster, build_a_cluster, filter_params, \
 	parse_range_config_file
-from helpers import update_param_file_with_dist_data
-from generate import sample_interaction_parameters, create_runner_sh_script
-from datasets import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised, \
+from src.helpers import update_param_file_with_dist_data
+from src.generate import sample_interaction_parameters, create_runner_sh_script
+from src.datasets import build_part_of_dataset_parametrised, build_whole_dataset_parametrised, DatasetParametrised, \
 	DatasetParametrisedHistogramNoPolynomial
-from helpers import parse_dist_config_file, generate_and_dump_distributions
-from nets import get_model
-from evals import Evaluator
+from src.helpers import parse_dist_config_file, generate_and_dump_distributions
+from src.nets import get_model
+from src.evals import Evaluator
 
 class TestDatasetBuilding(unittest.TestCase):
 

@@ -18,9 +18,6 @@ class MLP(nn.Module):
 		neg = self.net(-x)
 		return 0.5*(pos-neg)
 
-	def load_state_dict(self):
-		pass
-
 # other optimisers are possible, TODO to test them
 def get_model(input_size, hidden_layers, learning_rate, weight_decay=0.0):
 	mlp = MLP(input_size, hidden_layers, 1)
