@@ -3,21 +3,22 @@ from functools import partial
 
 import numpy as np
 import argparse
-
+import torch
 import json
+
 from os import makedirs
 from pathlib import Path
 from torch.utils.data import DataLoader, random_split
 
-from datasets import build_whole_dataset_parametrised, split_param_dict_train_val, DatasetParametrised, \
+from src.datasets import build_whole_dataset_parametrised, split_param_dict_train_val, DatasetParametrised, \
 	DatasetParametrisedHistogramNoPolynomial
-from generate import sample_interaction_parameters, create_runner_sh_script
-from nets import get_model
-from helpers import update_json, path_to_params, find_closest_path, \
+from src.generate import sample_interaction_parameters, create_runner_sh_script
+from src.nets import get_model
+from src.helpers import update_json, path_to_params, find_closest_path, \
 	find_closest_path_cluster, build_a_cluster, parse_range_config_file, filter_params
-from helpers import parse_dist_config_file, generate_and_dump_distributions, update_param_file_with_dist_data
-from evals import Evaluator
-from training import train_over_epochs, time_sensitive_loss, unweighted_mse
+from src.helpers import parse_dist_config_file, generate_and_dump_distributions, update_param_file_with_dist_data
+from src.evals import Evaluator
+from src.training import train_over_epochs, time_sensitive_loss, unweighted_mse
 
 # think about how to best parametrise distributions
 # in the directory you should have some parameters of the distribution. Let us maybe first try moving gaussian
@@ -213,7 +214,8 @@ if __name__ == '__main__':
 				params = update_param_file_with_dist_data(params, dist_fpath)
 
 			range_params = parse_range_config_file(args.training_range_config_file)
-			params_in, params_part_int, params_tot_out = filter_params(params, range_params)
+			params_in, params_part_int, params_tot_out, params_indices_in, params_indices_partially_out, params_indices_tot_out = (
+				filter_params(params, range_params, return_indices=True))
 			train_dataset_prototype, train_time_indices, pos_arrays = build_whole_dataset_parametrised(xgrid, params_in,
 			                                                                                           Ninter=args.Ninter,
 			                                                                                           stop_at_k=stop_at_k,
@@ -299,9 +301,19 @@ if __name__ == '__main__':
 		train_over_epochs(args.no_epochs, train_loader, val_loader,
 		                  model, opt, loss_fn, max_batches=args.max_batches)
 
-
 		figure_dir = os.path.join(args.experiment_data_dir, "figures")
 		os.makedirs(figure_dir, exist_ok=True)
+
+		with open(os.path.join(args.experiment_data_dir, "kwargs.json"), "w") as f:
+			json.dump(vars(args), f)
+		model_state_dict = os.path.join(args.experiment_data_dir, "model_data.pth")
+		torch.save(model.state_dict(), model_state_dict)
+		indices_json_path = os.path.join(args.experiment_data_dir, "indices.json")
+		if args.mode == 'train_in_out':
+			with open(indices_json_path, "w") as f:
+				# noinspection unbound-local-variable
+				json.dump({"in": params_indices_in, "pout": params_indices_partially_out, "totout": params_indices_tot_out}, f)
+
 		evaluator.evaluate_grid(figure_fpath=os.path.join(figure_dir, "train.png"))
 		if train_pos_array is not None:
 			fpath = os.path.join(figure_dir, "train_path_evaluation.png")

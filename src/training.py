@@ -3,7 +3,7 @@ import time
 import numpy as np
 import torch
 
-from helpers import build_progress_bar
+from src.helpers import build_progress_bar
 
 
 def train_loop(loader, net, opt,

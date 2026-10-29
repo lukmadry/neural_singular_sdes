@@ -57,7 +57,8 @@ void load_hdf(const std::string& filename, std::vector<double>& dist) {
     }
 
     dist.resize(total_elements);
-    dataset.read(dist.data(), H5::PredType::NATIVE_FLOAT, dataspace, dataspace);
+    dataset.read(dist.data(), H5::PredType::NATIVE_DOUBLE, dataspace, dataspace);
+    // native_double necessary here for Python conversions where we have mostly float64 by default, otherwise we get nonsense
 }
 
 
@@ -93,12 +94,12 @@ inline double lookup_value(double x, double grid_step, double *table_ptr, int id
 }
 
 
-void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::string fname, std::vector<double> &init_dist) {
+void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::string fname, std::vector<double> &init_dist, int max_iter) {
 	// -------------------------------------------------------------
 	// Simulation Parameters
 	// -------------------------------------------------------------
 	const int N = Ninter;
-	const double alph = alpha_arg; // this will be replaced by a arbitrary value.
+	const double alph = alpha_arg;
 	const double eps = std::pow(N, -1.0 + 1e-4);
 	// const double p_law = 0.4;
 
@@ -106,7 +107,10 @@ void run_simulation(int Ninter, double alpha_arg, double multip_arg, std::string
 	const double T = 1.0;
 	const double sqdt = std::sqrt(2.0 * dt);
 
-	const int M = static_cast<int>(T / dt) + 1;
+	int M = static_cast<int>(T / dt) + 1;
+	if (max_iter > 0)
+		M = max_iter;
+
 	const int pbar_length = 100;
 	const int verbosity_step = std::max(1, M / pbar_length);
 	const int save_every = 1000;
@@ -218,6 +222,7 @@ int main(int argc, char** argv) {
 	int i = 1;
 	double alph(0.2), multip(1);
     int N(150);
+    int max_iter(-1);
     std::string fname("test.hdf5");
     std::string distname("None");
     std::vector<double> p_coefs;
@@ -241,6 +246,9 @@ int main(int argc, char** argv) {
 				p_coefs.push_back(atof(argv[i+1+m]));
 			}
 		}
+		if (std::string(argv[i]) == "--max_iter"){
+			max_iter = atoi(argv[i+1]);
+		}
 		i++;
 	}
 
@@ -248,9 +256,17 @@ int main(int argc, char** argv) {
         return 1; // in this case no point in using this script
     }
 
+    std::cout << "distname: " << distname << std::endl;
     load_hdf(distname, init_distribution);
     N = init_distribution.size();
 
-	run_simulation(N, alph, multip, fname, init_distribution);
+    std::cout << "number of particles: " << N << std::endl;
+
+    std::cout << "first values of init_dist" << std::endl;
+    for (int i = 0; i < 10; i++){
+    	std::cout << init_distribution[i] << " ";
+    }
+
+	run_simulation(N, alph, multip, fname, init_distribution, max_iter);
 	return 0;
 }

@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 from torch.utils.data import Dataset
 
-from helpers import function_factory, build_progress_bar
+from src.helpers import function_factory, build_progress_bar
 
 
 def compute_drift_vec(arr, positions, fn):

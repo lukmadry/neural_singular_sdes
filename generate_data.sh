@@ -1,0 +1,2 @@
+python3 train_nn_on_drifts.py --mode generate --cpp_file_fpath cpp_simul/ips_sim_lookup_table_load_init_dist.cpp --compiled_file cpp_simul/sde_lt_init_dist --N 150 --Ninter 150 --n_dist 15 --alpha_range 0.3 0.45 --multiple_range 0.9 1.3 --add_distribution_generation --add_compilation --samples_dir init_dist_moving_gaussian_narrow --no-with_polynomial --script_filepath generation_script_diff_init_dist_small_range.sh --storage_dir storage_narrow_init_dist --overwrite_json --add_verification_script
+./generation_script_diff_init_dist_small_range.sh

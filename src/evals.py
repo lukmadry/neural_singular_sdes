@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from random import sample
-from helpers import OneFunctionOnAGrid, none_sentinel
+from src.helpers import OneFunctionOnAGrid, none_sentinel
 
 """
 
